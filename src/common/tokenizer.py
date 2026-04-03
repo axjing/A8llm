@@ -151,15 +151,7 @@ import rustbpe
 import tiktoken
 
 class RustBPETokenizer:
-    """
-    RustBPE分词器
-
-    轻量级包装tiktoken（用于高效推理），但使用rustbpe进行训练
-
-    参数:
-        enc: tiktoken编码实例
-        bos_token: 开始符token
-    """
+    """Light wrapper around tiktoken (for efficient inference) but train with rustbpe"""
 
     def __init__(self, enc, bos_token):
         self.enc = enc
@@ -263,17 +255,10 @@ class RustBPETokenizer:
 
     def render_conversation(self, conversation, max_tokens=2048):
         """
-        标记化单个聊天对话（在这里我们称之为"文档"）。
-
-        将对话转换为token ids，并生成相应的掩码
-
-        参数:
-            conversation: 对话对象，包含消息列表
-            max_tokens: 最大token数，默认为2048
-
-        返回:
-            ids: 渲染对话的token ids列表
-            mask: 相同长度的列表，mask=1表示助手需要训练的token
+        Tokenize a single Chat conversation (which we call a "doc" or "document" here).
+        Returns:
+        - ids: list[int] is a list of token ids of this rendered conversation
+        - mask: list[int] of same length, mask = 1 for tokens that the Assistant is expected to train on.
         """
         # ids, masks that we will return and a helper function to help build them up.
         ids, mask = [], []

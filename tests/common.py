@@ -15,14 +15,6 @@ from filelock import FileLock
 # Override with NANOCHAT_DTYPE env var: "bfloat16", "float16", "float32"
 _DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
 def _detect_compute_dtype():
-    """
-    检测计算数据类型
-
-    根据环境变量和硬件能力自动检测适合的计算数据类型
-
-    返回:
-        tuple: (计算数据类型, 检测原因)
-    """
     env = os.environ.get("NANOCHAT_DTYPE")
     if env is not None:
         return _DTYPE_MAP[env], f"set via NANOCHAT_DTYPE={env}"

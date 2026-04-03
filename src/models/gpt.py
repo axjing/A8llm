@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from configuration_model import GPTConfig
+from models.configuration_model import GPTConfig
 
 
 class Conv1D(nn.Module):
@@ -453,6 +453,3 @@ class GPT(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
 
         return idx
-            
-            
-            

@@ -11,7 +11,7 @@ import os
 # 添加当前目录到路径
 sys.path.append(os.path.dirname(__file__))
 
-from modeling import (
+from models.gpt import (
     Conv1D, 
     scaled_dot_product_attention,
     LayerNorm,
@@ -20,7 +20,7 @@ from modeling import (
     Block,
     GPT
 )
-from configuration_model import GPTConfig
+from models.configuration_model import GPTConfig
 
 
 def test_conv1d():
@@ -219,7 +219,7 @@ import os
 # 添加当前目录到路径
 sys.path.append(os.path.dirname(__file__))
 
-from modeling import (
+from models.gpt import (
     Conv1D, 
     scaled_dot_product_attention,
     LayerNorm,
@@ -228,7 +228,7 @@ from modeling import (
     Block,
     GPT
 )
-from configuration_model import GPTConfig
+from models.configuration_model import GPTConfig
 
 
 def test_conv1d():

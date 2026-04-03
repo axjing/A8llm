@@ -11,7 +11,7 @@ import shutil
 # 添加当前目录到路径
 sys.path.append(os.path.dirname(__file__))
 
-from tokenizer import HF2Tokenizer, SPECIAL_TOKENS, SPLIT_PATTERN
+from common.tokenizer import HF2Tokenizer, SPECIAL_TOKENS, SPLIT_PATTERN
 
 
 def test_tokenizer_initialization():
