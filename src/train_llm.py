@@ -1,19 +1,23 @@
 """
-Train model. From root directory of the project, run as:
+Train LLM model. From root directory of the project, run as:
 
-python -m src.train
+python -m src.train_llm
 
 or distributed as:
 
-torchrun --nproc_per_node=8 -m src.train
+torchrun --nproc_per_node=8 -m src.train_llm
+
+If you are only on CPU/Macbook, you'll want to train a much much smaller LLM. Example:
+python -m src.train_llm --depth=4 --max-seq-len=512 --device-batch-size=1 --eval-tokens=512 --core-metric-every=-1 --total-batch-size=512 --num-iterations=20
 """
+
 import os
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 import gc
 import json
-import time
 import math
+import time
 import argparse
 import contextlib
 from dataclasses import dataclass, asdict
@@ -26,10 +30,14 @@ import torch.distributed as dist
 from src.models.layers import Linear
 from src.models.config import LLMConfig
 from src.models.gpt import GPT
-from data.text_pretrain_loader import tokenizing_distributed_data_loader_bos_bestfit, tokenizing_distributed_data_loader_with_state_bos_bestfit
+from src.data.text_pretrain_loader import (
+    tokenizing_distributed_data_loader_bos_bestfit,
+    tokenizing_distributed_data_loader_with_state_bos_bestfit,
+)
 from src.trainer.distributed import (
-    compute_init, destory_ddp_process_group, autodetect_device_type,is_master,
-    get_peak_flops, COMPUTE_DTYPE, COMPUTE_DTYPE_REASON, is_ddp_initialized,
+    compute_init, destory_ddp_process_group, autodetect_device_type,
+    is_master, get_peak_flops, COMPUTE_DTYPE, COMPUTE_DTYPE_REASON,
+    is_ddp_initialized,
 )
 from src.common.logger import print0, DummySwanLab, print_banner
 from src.common.file_os import get_base_dir
@@ -45,6 +53,7 @@ print_banner()
 
 # -----------------------------------------------------------------------------
 # Training configuration
+
 @dataclass
 class TrainConfig:
     # Logging
@@ -111,14 +120,22 @@ def get_lr_multiplier(step: int, num_iterations: int, warmup_steps: int,
     return 1.0
 
 
-def get_muon_momentum(step: int, num_iterations: int) -> float:
-    """Muon momentum schedule."""
-    return 0.95
+def get_muon_momentum(step: int, num_iterations: int, warmdown_ratio: float) -> float:
+    """Muon momentum schedule: linear ramp to 0.97, then warmdown to 0.90."""
+    warmdown_start = int(num_iterations * (1 - warmdown_ratio))
+    if step < 400:
+        frac = step / 400
+        return (1 - frac) * 0.85 + frac * 0.97
+    elif step >= warmdown_start:
+        progress = (step - warmdown_start) / (num_iterations - warmdown_start)
+        return 0.97 * (1 - progress) + 0.90 * progress
+    else:
+        return 0.97
 
 
-def get_weight_decay(step: int) -> float:
-    """Weight decay schedule (constant for now)."""
-    return 1.0
+def get_weight_decay(step: int, num_iterations: int, weight_decay_scaled: float) -> float:
+    """Weight decay schedule: cosine decay to zero over training."""
+    return weight_decay_scaled * 0.5 * (1 + math.cos(math.pi * step / num_iterations))
 
 
 def build_model_meta(depth: int, vocab_size: int, args: TrainConfig) -> GPT:
@@ -181,7 +198,7 @@ def compute_lr_and_wd_scales(args: TrainConfig, total_batch_size: int,
     batch_ratio = total_batch_size / B_REF
     if batch_ratio != 1.0:
         batch_lr_scale = batch_ratio ** 0.5
-        print0(f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,}")
+        print0(f"Scaling LRs by {batch_lr_scale:.4f} for batch size {total_batch_size:,} (reference: {B_REF:,})")
 
     weight_decay_scaled = args.weight_decay * math.sqrt(total_batch_size / B_REF) * (D_REF / target_tokens)
     if weight_decay_scaled != args.weight_decay:
@@ -349,21 +366,23 @@ def build_model_and_optimizer(args: TrainConfig, vocab_size: int, device,
 
     return (
         model, orig_model, optimizer, scaler, num_flops_per_token,
-        num_iterations, total_batch_size, target_tokens, model_config_kwargs,
-        meta_data,
+        num_iterations, total_batch_size, batch_lr_scale, weight_decay_scaled,
+        target_tokens, model_config_kwargs, meta_data,
     )
 
 
 # -----------------------------------------------------------------------------
 # Evaluation & sampling
 
-def run_evaluation(model, orig_model, val_loader, eval_steps, token_bytes,
-                   step, swanlab_run, total_training_time, flops_so_far):
+def run_evaluation(model, val_loader, eval_steps, token_bytes,
+                   step, swanlab_run, total_training_time, flops_so_far, min_val_bpb):
     """Run validation bpb evaluation."""
     model.eval()
     with disable_fp8(model):
         val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
     print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
+    if val_bpb < min_val_bpb:
+        min_val_bpb = val_bpb
     swanlab_run.log({
         "step": step,
         "total_training_flops": flops_so_far,
@@ -371,7 +390,7 @@ def run_evaluation(model, orig_model, val_loader, eval_steps, token_bytes,
         "val/bpb": val_bpb,
     })
     model.train()
-    return val_bpb
+    return val_bpb, min_val_bpb
 
 
 def run_core_evaluation(orig_model, tokenizer, device, step, swanlab_run,
@@ -454,17 +473,18 @@ def maybe_save_checkpoint(checkpoint_dir, step, num_iterations, args,
 
 
 # -----------------------------------------------------------------------------
-# Training loop
+# Training step
 
 def train_one_step(model, x, y, train_loader, grad_accum_steps, scaler,
-                   optimizer, step, num_iterations, synchronize):
+                   optimizer, step, num_iterations, warmup_steps, warmdown_ratio,
+                   final_lr_frac, weight_decay_scaled, synchronize):
     """Execute a single training step with gradient accumulation."""
     synchronize()
     t0 = time.time()
     train_loss = None
 
     for micro_step in range(grad_accum_steps):
-        loss = model(x, y)
+        _, loss = model(x, y)
         train_loss = loss.detach()
         loss = loss / grad_accum_steps
         if scaler is not None:
@@ -473,10 +493,10 @@ def train_one_step(model, x, y, train_loader, grad_accum_steps, scaler,
             loss.backward()
         x, y, dataloader_state_dict = next(train_loader)
 
-    # Optimizer step
-    lrm = get_lr_multiplier(step, num_iterations, 40, 0.65, 0.05)
-    muon_momentum = get_muon_momentum(step, num_iterations)
-    muon_weight_decay = get_weight_decay(step)
+    # Optimizer step with dynamic schedules
+    lrm = get_lr_multiplier(step, num_iterations, warmup_steps, warmdown_ratio, final_lr_frac)
+    muon_momentum = get_muon_momentum(step, num_iterations, warmdown_ratio)
+    muon_weight_decay = get_weight_decay(step, num_iterations, weight_decay_scaled)
     for group in optimizer.param_groups:
         group["lr"] = group["initial_lr"] * lrm
         if group['kind'] == 'muon':
@@ -560,8 +580,8 @@ def train(args: TrainConfig):
     # Build model & optimizer
     (
         model, orig_model, optimizer, scaler, num_flops_per_token,
-        num_iterations, total_batch_size, target_tokens, model_config_kwargs,
-        resume_meta,
+        num_iterations, total_batch_size, batch_lr_scale, weight_decay_scaled,
+        target_tokens, model_config_kwargs, resume_meta,
     ) = build_model_and_optimizer(args, vocab_size, device, ddp_rank, checkpoint_dir)
 
     # Dataloaders
@@ -586,6 +606,8 @@ def train(args: TrainConfig):
     print0(f"Gradient accumulation steps: {grad_accum_steps}")
     print0(f"Actual total batch size: {actual_batch_size:,} tokens")
 
+    # weight_decay_scaled already returned by build_model_and_optimizer
+
     # Training loop
     step = 0
     if args.resume_from_step != -1:
@@ -601,9 +623,9 @@ def train(args: TrainConfig):
         if args.eval_every > 0 and (last_step or (step > 0 and step % args.eval_every == 0)):
             val_loader = build_val_loader()
             eval_steps = max(1, args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size))
-            val_bpb = run_evaluation(
-                model, orig_model, val_loader, eval_steps, token_bytes,
-                step, swanlab_run, total_training_time, flops_so_far,
+            val_bpb, min_val_bpb = run_evaluation(
+                model, val_loader, eval_steps, token_bytes,
+                step, swanlab_run, total_training_time, flops_so_far, min_val_bpb,
             )
 
         # CORE metric
@@ -631,7 +653,9 @@ def train(args: TrainConfig):
         # Training step
         train_loss_f, dt, x, y, dataloader_state_dict, lrm = train_one_step(
             model, x, y, train_loader, grad_accum_steps, scaler,
-            optimizer, step, num_iterations, synchronize,
+            optimizer, step, num_iterations, args.warmup_steps,
+            args.warmdown_ratio, args.final_lr_frac, weight_decay_scaled,
+            synchronize,
         )
 
         # Logging
@@ -741,3 +765,7 @@ def main():
     train(args)
     if is_ddp_initialized():
         destory_ddp_process_group()
+
+
+if __name__ == "__main__":
+    main()

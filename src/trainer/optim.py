@@ -10,7 +10,7 @@ Further contributions from @karpathy and @chrisjmccormick.
 import torch
 import torch.distributed as dist
 from torch import Tensor
-from trainer.distributed import COMPUTE_DTYPE
+from src.trainer.distributed import COMPUTE_DTYPE
 
 # -----------------------------------------------------------------------------
 """

@@ -12,7 +12,7 @@ from safetensors.torch import load_model,save_model
 
 from src.models.utils import top_k_top_p_filtering
 from src.models.vision_transformer import ViT
-from src.models.language_model import LlamaTransformer
+from src.models.llama import LlamaTransformer
 from src.models.modality_projector import ModalityProjector
 
 from src.models.config import LLMConfig,VLMConfig

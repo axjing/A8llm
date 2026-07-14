@@ -1,4 +1,5 @@
 import os
+import urllib.request
 from filelock import FileLock
 
 def get_base_dir():

@@ -82,7 +82,7 @@ class ViTMultiHeadAttention(nn.Module):
         
         # (bsz,seq_len,n_embed) -> (bsz,seq_len,n_head,head_dim) -> (bsz,n_head,seq_len,head_dim)
         q=q.view(bsz,seq_len,self.n_head,self.head_dim).transpose(1,2)
-        k=v.view(bsz,seq_len,self.n_head,self.head_dim).transpose(1,2)
+        k=k.view(bsz,seq_len,self.n_head,self.head_dim).transpose(1,2)
         v=v.view(bsz,seq_len,self.n_head,self.head_dim).transpose(1,2)
         
         if self.sdpa:
@@ -152,7 +152,7 @@ class ViT(nn.Module):
         self.cls_flag=self.cfg.vit_cls_flag
         self.dropout=nn.Dropout(self.cfg.vit_pdropout)
         self.blocks=nn.ModuleList([ViTBlock(self.cfg) for _ in range(self.cfg.vit_n_layers)])
-        self.layer_norm = nn.LayerNorm(self.cfg.n_embd, eps=self.cfg.vit_layernorm_eps)
+        self.layer_norm = nn.LayerNorm(self.cfg.vit_n_embd, eps=self.cfg.vit_layernorm_eps)
         
         self.apply(self.__init_weights)
         

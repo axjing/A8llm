@@ -31,13 +31,15 @@ import tempfile
 import argparse
 import torch
 
-from nanochat.common import compute_init, compute_cleanup, print0, get_base_dir, autodetect_device_type, download_file_with_lock
-from nanochat.tokenizer import HuggingFaceTokenizer, get_token_bytes
-from nanochat.checkpoint_manager import load_model
-from nanochat.core_eval import evaluate_task
-from nanochat.dataloader import tokenizing_distributed_data_loader_bos_bestfit
-from nanochat.loss_eval import evaluate_bpb
-from nanochat.engine import Engine
+from src.trainer.distributed import compute_init, destory_ddp_process_group, autodetect_device_type, get_dist_info
+from src.common.logger import print0
+from src.common.file_os import get_base_dir, download_file_with_lock
+from src.common.tokenizer import get_token_bytes, HF2Tokenizer
+from src.engine.utils_checkpoints import load_model
+from src.evaluator.eval_core import evaluate_task
+from src.data.text_pretrain_loader import tokenizing_distributed_data_loader_bos_bestfit
+from src.evaluator.eval_loss import evaluate_bpb
+from src.engine.engine_inference import Engine
 
 # -----------------------------------------------------------------------------
 # HuggingFace loading utilities
@@ -73,7 +75,7 @@ def load_hf_model(hf_path: str, device):
     model.eval()
     max_seq_len = 1024 if "gpt2" in hf_path else None
     model = ModelWrapper(model, max_seq_len=max_seq_len)
-    tokenizer = HuggingFaceTokenizer.from_pretrained(hf_path)
+    tokenizer = HF2Tokenizer.from_pretrained(hf_path)
     return model, tokenizer
 
 
@@ -298,7 +300,7 @@ def main():
             print0(f"CORE metric: {core_results['core_metric']:.4f}")
 
     # --- Log to report ---
-    from nanochat.report import get_report
+    from src.report import get_report
     report_data = [{"model": model_name}]
 
     if core_results:
@@ -316,7 +318,7 @@ def main():
 
     get_report().log(section="Base model evaluation", data=report_data)
 
-    compute_cleanup()
+    destory_ddp_process_group()
 
 
 if __name__ == "__main__":

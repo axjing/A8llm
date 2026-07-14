@@ -4,7 +4,7 @@
 导出与FA3接口完全一致的`flash_attn`模块，但在非Hopper架构GPU（包括Blackwell）、MPS及CPU设备上会自动回退至PyTorch SDPA。
 
 使用方式（可直接替换FA3）：
-from nanochat.flash_attention import flash_attn
+from src.models.flash_attention import flash_attn
 
 # 训练场景(no with KV cache)
 y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
@@ -56,7 +56,7 @@ def _resolve_use_fa3():
         return False
     if HAS_FA3:
         # FA3 Hopper kernels only support bf16 and fp8; fp16/fp32 must use SDPA fallback
-        from trainer.distributed import COMPUTE_DTYPE
+        from src.trainer.distributed import COMPUTE_DTYPE
         if COMPUTE_DTYPE == torch.bfloat16:
             return True
         return False

@@ -243,7 +243,7 @@ print_comparison("GPT-2", tokenizer_results['gpt2'], tokenizer_results['ours'], 
 print_comparison("GPT-4", tokenizer_results['gpt4'], tokenizer_results['ours'], all_text)
 
 # Log to report
-from nanochat.report import get_report
+from src.report import get_report
 lines = []
 for baseline_name in ["GPT-2", "GPT-4"]:
     baseline_key = baseline_name.lower().replace('-', '')

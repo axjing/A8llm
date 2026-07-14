@@ -6,7 +6,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.models.config import LLMConfig
-from src.models.layers import CausalSelfAttention,MLP,LayerNorm
+from src.models.layers import CausalSelfAttention, MLP, LayerNorm
+from src.models.transformer_utils import (
+    init_weights, scale_residual_projections,
+    count_scaling_params, estimate_flops,
+    build_muon_optimizer,
+)
     
 class Block(nn.Module):
     """Block 层"""
@@ -55,16 +60,22 @@ class GPT(nn.Module):
         # self.transformer.wte.weight=self.lm_head.weight
         self.wte.weight=self.lm_head.weight
         
-        # init all weights
-        self.apply(self._init_weights)
+        # init all weights using shared utility
+        self.apply(lambda m: init_weights(m, rms_norm=False))
         # 按照GPT-2论文所述，对残差投影应用特殊的缩放初始化
-        for pn,p in self.named_parameters():
-            if pn.endswith("c_proj.weight"):
-                nn.init.normal_(p,mean=0.0,std=0.02*(2*cfg.n_layers)**(-0.5))
+        scale_residual_projections(self, n_layers=cfg.n_layers, suffix="c_proj.weight")
                 
         # report number of parameters
         print(f"Number of parameters:  {self.get_num_params()/1e6 :.2f}M")
         
+    def init_weights(self):
+        """重新初始化全部权重（含残差投影缩放）。
+
+        与 ``__init__`` 中的初始化逻辑保持一致，供检查点重建等场景调用。
+        """
+        self.apply(lambda m: init_weights(m, rms_norm=False))
+        scale_residual_projections(self, n_layers=self.config.n_layers, suffix="c_proj.weight")
+
     def get_num_params(self,non_embedding=True):
         """
         返回模型中的参数数量。
@@ -78,21 +89,6 @@ class GPT(nn.Module):
             n_params-=self.wpe.weight.numel()
         return n_params
     
-    def _init_weights(self,module: nn.Module):
-        """
-        初始化模型参数
-
-        Args:
-            module (nn.Module): _description_
-        """
-        if isinstance(module,nn.Linear):
-            nn.init.normal_(module.weight,mean=0.0,std=0.02)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
-                
-        elif isinstance(module,nn.Embedding):
-            nn.init.normal_(module.weight,mean=0.0,std=0.02)
-
     def forward(self,idx:torch.Tensor,targets=None):
         device=idx.device
         
@@ -234,7 +230,7 @@ class GPT(nn.Module):
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
         """ 以A100 bfloat16峰值FLOPS为单位估算模型的FLOPS利用率(model flops utilization,MFU)
-        
+
         """
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
@@ -249,6 +245,39 @@ class GPT(nn.Module):
         flops_promised = 312e12 # A100 GPU bfloat16 peak flops is 312 TFLOPS
         mfu = flops_achieved / flops_promised
         return mfu
+
+    def num_scaling_params(self) -> dict[str, int]:
+        """Return parameter counts by category for scaling laws analysis."""
+        cfg = self.config
+        return count_scaling_params(
+            n_layers=cfg.n_layers,
+            n_embd=cfg.n_embd,
+            n_heads=cfg.n_heads,
+            n_kv_heads=cfg.n_kv_heads if cfg.n_kv_heads is not None else cfg.n_heads,
+            n_intermediate=cfg.n_intermediate,
+            vocab_size=cfg.vocab_size,
+            n_positions=cfg.n_positions,
+            bias=cfg.bias,
+        )
+
+    def estimate_flops(self) -> int:
+        """Estimate FLOPs per training iteration (forward + backward)."""
+        N = self.get_num_params()
+        T = self.config.n_positions
+        return estimate_flops(N, T)
+
+    def setup_optimizer(self, unembedding_lr: float = 0.008, embedding_lr: float = 0.3,
+                        scalar_lr: float = 0.5, matrix_lr: float = 0.02,
+                        weight_decay: float = 0.28):
+        """Create a combined MuonAdamW optimizer for the model."""
+        return build_muon_optimizer(
+            self,
+            embed_lr=embedding_lr,
+            head_lr=unembedding_lr,
+            scalar_lr=scalar_lr,
+            matrix_lr=matrix_lr,
+            weight_decay=weight_decay,
+        )
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):

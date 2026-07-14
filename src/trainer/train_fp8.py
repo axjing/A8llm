@@ -72,7 +72,7 @@ generates a different graph. Numerics are bitwise identical in eager mode.
 import torch
 import torch.nn as nn
 
-from trainer.distributed import COMPUTE_DTYPE
+from src.trainer.distributed import COMPUTE_DTYPE
 
 # Avoid division by zero when computing scale from an all-zeros tensor
 EPS = 1e-12

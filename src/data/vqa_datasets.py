@@ -1,4 +1,5 @@
 
+import logging
 from typing import Any
 from PIL import Image
 import torch
@@ -161,7 +162,7 @@ class CollatorBase(object):
 
         
     def _pad_batch(self,batch:dict,max_length:int):
-        batch['input_ids']=[torch.nn.functional.pad(ids,(max_length-len(ids),0),value=self.tokenizer.pad_token_ids) for ids in batch['input_ids']]
+        batch['input_ids']=[torch.nn.functional.pad(ids,(max_length-len(ids),0),value=self.tokenizer.pad_token_id) for ids in batch['input_ids']]
         batch['labels']=[torch.nn.functional.pad(labels,(max_length-len(labels),0),value=self.tokenizer.pad_token_id) for labels in batch['labels']]
         batch['attention_mask']=[torch.nn.functional.pad(attention_mask,(max_length-len(attention_mask),0),value=0) for attention_mask in batch['attention_mask']]
     
