@@ -422,15 +422,16 @@ class LlamaTransformer(nn.Module):
                             sd["head.weight"].copy_(
                                 sd[our_key]
                             )  # Update the head weights as well
+                            loaded_keys.add(our_key)
                         elif tensor.shape == sd[our_key].shape:
                             sd[our_key].copy_(tensor)
+                            loaded_keys.add(our_key)
 
                         else:
                             print(
                                 f"Shape mismatch for {hf_key} -> {our_key}: {tensor.shape} vs {sd[our_key].shape}"
                             )
 
-                    loaded_keys.add(our_key)
         for hf_key, our_key in mapping.items():
             if our_key not in loaded_keys and our_key in sd:
                 print(

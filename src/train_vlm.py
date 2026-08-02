@@ -892,6 +892,16 @@ def train(train_cfg: TrainConfig, vlm_cfg: VLMConfig) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--vlm_config",
+        type=str,
+        help="Path to a VLMConfig JSON file (overridden by explicit CLI flags)",
+    )
+    parser.add_argument(
+        "--train_config",
+        type=str,
+        help="Path to a TrainConfig JSON file (overridden by explicit CLI flags)",
+    )
+    parser.add_argument(
         "--lr_mp", type=float, help="Learning rate for the mapping network"
     )
     parser.add_argument(
@@ -944,8 +954,14 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    vlm_cfg = VLMConfig()
-    train_cfg = TrainConfig()
+    if args.vlm_config is not None:
+        vlm_cfg = VLMConfig.from_json(args.vlm_config)
+    else:
+        vlm_cfg = VLMConfig()
+    if args.train_config is not None:
+        train_cfg = TrainConfig.from_json(args.train_config)
+    else:
+        train_cfg = TrainConfig()
 
     if args.lr_mp is not None:
         train_cfg.lr_mp = args.lr_mp

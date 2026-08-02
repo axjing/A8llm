@@ -1,0 +1,20 @@
+{
+  "lr_mp": 0.0005,
+  "lr_vision_backbone": 5e-05,
+  "lr_language_backbone": 5e-05,
+  "val_size": 2000,
+  "batch_size": 1,
+  "gradient_accumulation_steps": 16,
+  "max_grad_norm": 1.0,
+  "eval_in_epochs": true,
+  "eval_interval": 500,
+  "stats_log_interval": 100,
+  "max_training_steps": 15000,
+  "max_images_per_example": 4,
+  "max_images_per_knapsack": 8,
+  "max_sample_length": 2048,
+  "compile": false,
+  "resume_from_vlm_checkpoint": false,
+  "log_wandb": false,
+  "use_lmms_eval": false
+}

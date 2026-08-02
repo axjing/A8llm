@@ -191,6 +191,25 @@ class VLMConfig(LLMConfig):
     """
 
     # -------------------------------------------------------------------------
+    # Language backbone overrides (VLM defaults differ from plain LLM)
+    # -------------------------------------------------------------------------
+    model_type: str = "vlm"
+    lm_model_type: str = "HuggingFaceTB/SmolLM2-360M-Instruct"
+    lm_tokenizer: str = "HuggingFaceTB/SmolLM2-360M-Instruct"
+    n_embd: int = 960
+    n_intermediate: int = 2560
+    n_layers: int = 32
+    n_heads: int = 15
+    n_kv_heads: int = 5
+    n_positions: int = 4096
+    pad_token_id: int | None = 1
+    bos_token_id: int = 49406
+    eos_token_id: int = 49407
+    activation_function: str = "gelu_pytorch_tanh"
+    layer_norm_epsilon: float = 1e-6
+    attn_pdrop: float = 0.0
+
+    # -------------------------------------------------------------------------
     # Vision Encoder
     # -------------------------------------------------------------------------
     vit_model_type: str = "google/siglip2-base-patch16-512"
@@ -242,29 +261,21 @@ class VLMConfig(LLMConfig):
     def __post_init__(self) -> None:
         """VLM-specific initialization."""
         super().__post_init__()
-        # VLM defaults override LLM defaults
-        self.lm_model_type = "HuggingFaceTB/SmolLM2-360M-Instruct"
-        self.lm_tokenizer = "HuggingFaceTB/SmolLM2-360M-Instruct"
-        self.model_type = "vlm"
-
-        # Architecture overrides
-        self.n_embd = 960
-        self.n_intermediate = 2560
-        self.n_layers = 32
-        self.n_heads = 15
-        self.n_kv_heads = 5
-        self.n_positions = 4096
-
-        # Token overrides
+        # The vocab size depends on the extra VLM tokens, which are populated
+        # above, so it must be derived here rather than as a field default.
         self.vocab_size = self.vlm_base_vocab_size + len(self.vlm_extra_tokens)
-        self.pad_token_id = 1
-        self.bos_token_id = 49406
-        self.eos_token_id = 49407
 
-        # Other overrides
-        self.activation_function = "gelu_pytorch_tanh"
-        self.layer_norm_epsilon = 1e-6
-        self.attn_pdrop = 0.0
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "VLMConfig":
+        """Create a VLMConfig from a dictionary."""
+        return cls(**data)
+
+    @classmethod
+    def from_json(cls, file_path: str) -> "VLMConfig":
+        """Load a VLMConfig from a JSON file."""
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls(**data)
 
 
 # Predefined model configurations

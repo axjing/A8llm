@@ -1,5 +1,6 @@
 import json
 from dataclasses import asdict, dataclass
+from typing import Any
 
 
 @dataclass
@@ -36,6 +37,18 @@ class TrainConfig:
     lmms_eval_tasks: str = "mmstar,mmmu_val,ocrbench,textvqa_val,docvqa_val,scienceqa,mme,infovqa_val,chartqa"  # Pass additional task as one string, seperated by commas without spaces (e.g. 'mmstar,mmmu,ocrbench')
     lmms_eval_limit: float | None = None
     lmms_eval_batch_size: int = 2
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TrainConfig":
+        """Create a TrainConfig from a dictionary."""
+        return cls(**data)
+
+    @classmethod
+    def from_json(cls, file_path: str) -> "TrainConfig":
+        """Load a TrainConfig from a JSON file."""
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls(**data)
 
     def to_json(self, file_path: str | None = None, indent: int = 4) -> str:
         """

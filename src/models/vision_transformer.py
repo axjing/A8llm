@@ -151,10 +151,8 @@ class ViTBlock(nn.Module):
         self.mlp = ViTMLP(cfg)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.ln1(x)
-        x = x + self.attn(x)
-        x = self.ln2(x)
-        x = x + self.mlp(x)
+        x = x + self.attn(self.ln1(x))
+        x = x + self.mlp(self.ln2(x))
 
         return x
 
