@@ -1,17 +1,27 @@
-import torch
-from torch.utils.data import IterableDataset, get_worker_info
-import threading
-from queue import Queue
-from typing import Iterator
 import itertools
 import random
+import threading
+from collections.abc import Callable, Iterable, Iterator
+from queue import Queue
+from typing import Any, TypedDict, cast
+
+import torch
+from torch.utils.data import IterableDataset, get_worker_info
 
 random.seed(42)  # Set the random seed to the meaning of life for good luck
 
-class ConstantLengthDataset(IterableDataset):
+
+class PackedSample(TypedDict):
+    input_ids: torch.Tensor
+    labels: torch.Tensor
+    attention_mask: torch.Tensor
+    images: list[torch.Tensor]
+
+
+class ConstantLengthDataset(IterableDataset[PackedSample]):
     def __init__(
         self,
-        dataset,
+        dataset: Any,
         infinite: bool = False,
         max_sample_length: int = 1024,
         seq_length: int = 1024,
@@ -19,7 +29,9 @@ class ConstantLengthDataset(IterableDataset):
         queue_size: int = 2,
         max_images_per_example: int = 4,
         max_images_per_knapsack: int = 18,
-    ):
+    ) -> None:
+        # Any required: the wrapped dataset is a dynamic VQA dataset interface
+        # (mp_image_token_length, tokenizer, iter_for_worker, __getitem__).
         self.dataset = dataset
         self.max_sample_length = max_sample_length
         self.seq_length = seq_length
@@ -34,12 +46,12 @@ class ConstantLengthDataset(IterableDataset):
             self.dataset.mp_image_token_length + 198
         )  # 198 is the average tokens for the cauldron dataset
 
-    def __len__(self):
+    def __len__(self) -> int:
         return int(
             len(self.dataset) * self._average_length_per_sample / self.seq_length
         )
 
-    def __iter__(self) -> Iterator[dict]:
+    def __iter__(self) -> Iterator[PackedSample]:
         """
         Returns an iterator over the dataset that yields fixed-length sequences for training.
 
@@ -60,14 +72,18 @@ class ConstantLengthDataset(IterableDataset):
         worker_id = worker_info.id if worker_info else 0
         num_workers = worker_info.num_workers if worker_info else 1
 
-        def make_base_iterator():
+        def make_base_iterator() -> Iterator[dict[str, Any] | None]:
             """Return a (sharded) iterator over the underlying dataset."""
             if not hasattr(self.dataset.dataset, "__len__"):
-                return self.dataset.iter_for_worker()  # with iterable datasets, each worker gets different shards
-            
+                return cast(
+                    Iterator[dict[str, Any] | None],
+                    self.dataset.iter_for_worker(),
+                )  # with iterable datasets, each worker gets different shards
+
             all_indices = range(len(self.dataset))
 
             # Shard the *indices* first, before any data is fetched.
+            worker_indices: Iterable[int]
             if num_workers > 1:
                 worker_indices = itertools.islice(
                     all_indices, worker_id, None, num_workers
@@ -76,13 +92,13 @@ class ConstantLengthDataset(IterableDataset):
                 worker_indices = all_indices
 
             # Create an iterator that only calls __getitem__ for the assigned indices.
-            def sharded_item_iterator():
+            def sharded_item_iterator() -> Iterator[dict[str, Any] | None]:
                 for idx in worker_indices:
                     yield self.dataset[idx]
 
             return sharded_item_iterator()
 
-        queue: Queue = Queue(maxsize=self.queue_size)
+        queue: Queue[list[PackedSample] | object] = Queue(maxsize=self.queue_size)
 
         producer = threading.Thread(
             target=self._producer, args=(make_base_iterator, queue), daemon=True
@@ -91,23 +107,25 @@ class ConstantLengthDataset(IterableDataset):
 
         while True:
             batch_of_batches = queue.get()
-            if batch_of_batches is self._sentinel:
+            if isinstance(batch_of_batches, list):
+                yield from batch_of_batches
+            else:
+                # The sentinel signals that the producer is done.
                 break
-            for batch in batch_of_batches:
-                yield batch
 
     def _producer(
         self,
-        make_iterator,  # a zero-arg lambda that returns a fresh (possibly sharded) iterator
-        queue: Queue,
-    ):
+        make_iterator: Callable[[], Iterator[dict[str, Any] | None]],
+        queue: Queue[list[PackedSample] | object],
+    ) -> None:
         """Runs in a separate daemon thread and keeps `queue` full."""
         iterator = make_iterator()
         more_examples = True
 
         while more_examples:
             # ------------- 1) pull raw samples until we have enough -------- #
-            buffer, buffer_len = [], 0
+            buffer: list[dict[str, Any]] = []
+            buffer_len: int = 0
             while buffer_len < self.max_length:
                 try:
                     sample = next(iterator)
@@ -154,15 +172,17 @@ class ConstantLengthDataset(IterableDataset):
                 max_images_per_knapsack=self.max_images_per_knapsack,
             )
 
-            packed_group = []
+            packed_group: list[PackedSample] = []
             for g in groups:
                 packed = self._pack_one_group(g, buffer, self.seq_length)
-                packed_group.append({
-                    "input_ids":      packed[0],
-                    "labels":         packed[1],
-                    "attention_mask": packed[2],
-                    "images":         packed[3],
-                })
+                packed_group.append(
+                    {
+                        "input_ids": packed[0],
+                        "labels": packed[1],
+                        "attention_mask": packed[2],
+                        "images": packed[3],
+                    }
+                )
 
             if packed_group:
                 queue.put(packed_group)
@@ -171,8 +191,12 @@ class ConstantLengthDataset(IterableDataset):
         queue.put(self._sentinel)
 
     def _balanced_greedy_knapsack(
-        self, buffer, L, delta=0, max_images_per_knapsack=None
-    ):
+        self,
+        buffer: list[dict[str, Any]],
+        L: int,
+        delta: int = 0,
+        max_images_per_knapsack: int | None = None,
+    ) -> list[list[int]]:
         # Extract lengths and image counts from buffer
         lengths = [len(x["input_ids"]) for x in buffer]
         image_counts = [len(x["images"]) for x in buffer]
@@ -183,13 +207,13 @@ class ConstantLengthDataset(IterableDataset):
         )
 
         min_knapsacks = (sum(lengths) + L - 1) // L + delta
-        knapsack_load = [0] * min_knapsacks
-        knapsack_image_counts = [0] * min_knapsacks
-        knapsack_groups = [[] for _ in range(min_knapsacks)]
+        knapsack_load: list[int] = [0] * min_knapsacks
+        knapsack_image_counts: list[int] = [0] * min_knapsacks
+        knapsack_groups: list[list[int]] = [[] for _ in range(min_knapsacks)]
 
         for idx, (item_len, item_image_count) in items:
             # Find a suitable knapsack that satisfies both length and image count constraints
-            suitable_knapsack = None
+            suitable_knapsack: int | None = None
 
             # First try to find a knapsack that can fit both constraints
             for ks_id in sorted(
@@ -218,11 +242,21 @@ class ConstantLengthDataset(IterableDataset):
             knapsack_image_counts[suitable_knapsack] += item_image_count
 
         # remove the completely empty bags that the +delta heuristic created
-        random.shuffle(knapsack_groups)  # Knapsacks are semi-ordered after packing, thanks Luis for noticing!
+        random.shuffle(
+            knapsack_groups
+        )  # Knapsacks are semi-ordered after packing, thanks Luis for noticing!
         return [g for g in knapsack_groups if g]
 
-    def _pack_one_group(self, group_indices, batch, max_len):
-        ids, lbl, am, ims = [], [], [], []
+    def _pack_one_group(
+        self,
+        group_indices: list[int],
+        batch: list[dict[str, Any]],
+        max_len: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+        ids: list[torch.Tensor] = []
+        lbl: list[torch.Tensor] = []
+        am: list[torch.Tensor] = []
+        ims: list[torch.Tensor] = []
 
         for i in group_indices:
             ids.extend(batch[i]["input_ids"])

@@ -2,56 +2,68 @@
 Utilities for generating training report cards. More messy code than usual, will fix.
 """
 
+import argparse
+import datetime
 import os
+import platform
 import re
 import shutil
-import subprocess
 import socket
-import datetime
-import platform
+import subprocess
+from collections.abc import Sequence
+from typing import Any, cast
+
 import psutil
 import torch
 
-def run_command(cmd):
+from src.common.file_os import get_base_dir
+from src.trainer.distributed import get_dist_info
+
+
+def run_command(cmd: str) -> str | None:
     """Run a shell command and return output, or None if it fails."""
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=5, check=False
+        )
         # Return stdout if we got output (even if some files in xargs failed)
         if result.stdout.strip():
             return result.stdout.strip()
         if result.returncode == 0:
             return ""
         return None
-    except:
+    except (OSError, subprocess.SubprocessError, ValueError):
         return None
 
-def get_git_info():
+
+def get_git_info() -> dict[str, Any]:
     """Get current git commit, branch, and dirty status."""
-    info = {}
-    info['commit'] = run_command("git rev-parse --short HEAD") or "unknown"
-    info['branch'] = run_command("git rev-parse --abbrev-ref HEAD") or "unknown"
+    info: dict[str, Any] = {}
+    info["commit"] = run_command("git rev-parse --short HEAD") or "unknown"
+    info["branch"] = run_command("git rev-parse --abbrev-ref HEAD") or "unknown"
 
     # Check if repo is dirty (has uncommitted changes)
     status = run_command("git status --porcelain")
-    info['dirty'] = bool(status) if status is not None else False
+    info["dirty"] = bool(status) if status is not None else False
 
     # Get commit message
-    info['message'] = run_command("git log -1 --pretty=%B") or ""
-    info['message'] = info['message'].split('\n')[0][:80]  # First line, truncated
+    info["message"] = run_command("git log -1 --pretty=%B") or ""
+    info["message"] = info["message"].split("\n")[0][:80]  # First line, truncated
 
     return info
 
-def get_gpu_info():
+
+def get_gpu_info() -> dict[str, Any]:
     """Get GPU information."""
     if not torch.cuda.is_available():
         return {"available": False}
 
     num_devices = torch.cuda.device_count()
-    info = {
+    info: dict[str, Any] = {
         "available": True,
         "count": num_devices,
         "names": [],
-        "memory_gb": []
+        "memory_gb": [],
     }
 
     for i in range(num_devices):
@@ -64,29 +76,33 @@ def get_gpu_info():
 
     return info
 
-def get_system_info():
+
+def get_system_info() -> dict[str, Any]:
     """Get system information."""
-    info = {}
+    info: dict[str, Any] = {}
 
     # Basic system info
-    info['hostname'] = socket.gethostname()
-    info['platform'] = platform.system()
-    info['python_version'] = platform.python_version()
-    info['torch_version'] = torch.__version__
+    info["hostname"] = socket.gethostname()
+    info["platform"] = platform.system()
+    info["python_version"] = platform.python_version()
+    info["torch_version"] = torch.__version__
 
     # CPU and memory
-    info['cpu_count'] = psutil.cpu_count(logical=False)
-    info['cpu_count_logical'] = psutil.cpu_count(logical=True)
-    info['memory_gb'] = psutil.virtual_memory().total / (1024**3)
+    info["cpu_count"] = psutil.cpu_count(logical=False)
+    info["cpu_count_logical"] = psutil.cpu_count(logical=True)
+    info["memory_gb"] = psutil.virtual_memory().total / (1024**3)
 
     # User and environment
-    info['user'] = os.environ.get('USER', 'unknown')
-    info['nanochat_base_dir'] = os.environ.get('NANOCHAT_BASE_DIR', 'out')
-    info['working_dir'] = os.getcwd()
+    info["user"] = os.environ.get("USER", "unknown")
+    info["nanochat_base_dir"] = os.environ.get("NANOCHAT_BASE_DIR", "out")
+    info["working_dir"] = os.getcwd()
 
     return info
 
-def estimate_cost(gpu_info, runtime_hours=None):
+
+def estimate_cost(
+    gpu_info: dict[str, Any], runtime_hours: float | None = None
+) -> dict[str, Any] | None:
     """Estimate training cost based on GPU type and runtime."""
 
     # Rough pricing, from Lambda Cloud
@@ -101,7 +117,7 @@ def estimate_cost(gpu_info, runtime_hours=None):
         return None
 
     # Try to identify GPU type from name
-    hourly_rate = None
+    hourly_rate: float | None = None
     gpu_name = gpu_info["names"][0] if gpu_info["names"] else "unknown"
     for gpu_type, rate in gpu_hourly_rates.items():
         if gpu_type in gpu_name:
@@ -114,12 +130,15 @@ def estimate_cost(gpu_info, runtime_hours=None):
     return {
         "hourly_rate": hourly_rate,
         "gpu_type": gpu_name,
-        "estimated_total": hourly_rate * runtime_hours if runtime_hours else None
+        "estimated_total": hourly_rate * runtime_hours if runtime_hours else None,
     }
 
-def generate_header():
+
+def generate_header() -> str:
     """Generate the header for a training report."""
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
     git_info = get_git_info()
     gpu_info = get_gpu_info()
@@ -133,48 +152,50 @@ Generated: {timestamp}
 ## Environment
 
 ### Git Information
-- Branch: {git_info['branch']}
-- Commit: {git_info['commit']} {"(dirty)" if git_info['dirty'] else "(clean)"}
-- Message: {git_info['message']}
+- Branch: {git_info["branch"]}
+- Commit: {git_info["commit"]} {"(dirty)" if git_info["dirty"] else "(clean)"}
+- Message: {git_info["message"]}
 
 ### Hardware
-- Platform: {sys_info['platform']}
-- CPUs: {sys_info['cpu_count']} cores ({sys_info['cpu_count_logical']} logical)
-- Memory: {sys_info['memory_gb']:.1f} GB
+- Platform: {sys_info["platform"]}
+- CPUs: {sys_info["cpu_count"]} cores ({sys_info["cpu_count_logical"]} logical)
+- Memory: {sys_info["memory_gb"]:.1f} GB
 """
 
     if gpu_info.get("available"):
         gpu_names = ", ".join(set(gpu_info["names"]))
         total_vram = sum(gpu_info["memory_gb"])
-        header += f"""- GPUs: {gpu_info['count']}x {gpu_names}
+        header += f"""- GPUs: {gpu_info["count"]}x {gpu_names}
 - GPU Memory: {total_vram:.1f} GB total
-- CUDA Version: {gpu_info['cuda_version']}
+- CUDA Version: {gpu_info["cuda_version"]}
 """
     else:
         header += "- GPUs: None available\n"
 
     if cost_info and cost_info["hourly_rate"] > 0:
-        header += f"""- Hourly Rate: ${cost_info['hourly_rate']:.2f}/hour\n"""
+        header += f"""- Hourly Rate: ${cost_info["hourly_rate"]:.2f}/hour\n"""
 
     header += f"""
 ### Software
-- Python: {sys_info['python_version']}
-- PyTorch: {sys_info['torch_version']}
+- Python: {sys_info["python_version"]}
+- PyTorch: {sys_info["torch_version"]}
 
 """
 
     # bloat metrics: count lines/chars in git-tracked source files only
-    extensions = ['py', 'md', 'rs', 'html', 'toml', 'sh']
-    git_patterns = ' '.join(f"'*.{ext}'" for ext in extensions)
+    extensions = ["py", "md", "rs", "html", "toml", "sh"]
+    git_patterns = " ".join(f"'*.{ext}'" for ext in extensions)
     files_output = run_command(f"git ls-files -- {git_patterns}")
-    file_list = [f for f in (files_output or '').split('\n') if f]
+    file_list = [f for f in (files_output or "").split("\n") if f]
     num_files = len(file_list)
     num_lines = 0
     num_chars = 0
     if num_files > 0:
-        wc_output = run_command(f"git ls-files -- {git_patterns} | xargs wc -lc 2>/dev/null")
+        wc_output = run_command(
+            f"git ls-files -- {git_patterns} | xargs wc -lc 2>/dev/null"
+        )
         if wc_output:
-            total_line = wc_output.strip().split('\n')[-1]
+            total_line = wc_output.strip().split("\n")[-1]
             parts = total_line.split()
             if len(parts) >= 2:
                 num_lines = int(parts[0])
@@ -183,8 +204,8 @@ Generated: {timestamp}
 
     # count dependencies via uv.lock
     uv_lock_lines = 0
-    if os.path.exists('uv.lock'):
-        with open('uv.lock', 'r', encoding='utf-8') as f:
+    if os.path.exists("uv.lock"):
+        with open("uv.lock", "r", encoding="utf-8") as f:
             uv_lock_lines = len(f.readlines())
 
     header += f"""
@@ -198,11 +219,14 @@ Generated: {timestamp}
 """
     return header
 
+
 # -----------------------------------------------------------------------------
 
-def slugify(text):
+
+def slugify(text: str) -> str:
     """Slugify a text string."""
     return text.lower().replace(" ", "-")
+
 
 # the expected files and their order
 EXPECTED_FILES = [
@@ -219,43 +243,51 @@ EXPECTED_FILES = [
 # the metrics we're currently interested in
 chat_metrics = ["ARC-Easy", "ARC-Challenge", "MMLU", "GSM8K", "HumanEval", "ChatCORE"]
 
-def extract(section, keys):
-    """simple def to extract a single key from a section"""
+
+def extract(section: str, keys: str | list[str]) -> dict[str, str]:
+    """Simple def to extract a single key from a section."""
     if not isinstance(keys, list):
-        keys = [keys] # convenience
-    out = {}
+        keys = [keys]  # convenience
+    out: dict[str, str] = {}
     for line in section.split("\n"):
         for key in keys:
             if key in line:
                 out[key] = line.split(":")[1].strip()
     return out
 
-def extract_timestamp(content, prefix):
+
+def extract_timestamp(content: str, prefix: str) -> datetime.datetime | None:
     """Extract timestamp from content with given prefix."""
-    for line in content.split('\n'):
+    for line in content.split("\n"):
         if line.startswith(prefix):
             time_str = line.split(":", 1)[1].strip()
             try:
-                return datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-            except:
-                pass
+                parsed = datetime.datetime.strptime(
+                    time_str, "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=datetime.timezone.utc)
+            except ValueError:
+                continue
+            return parsed
     return None
+
 
 class Report:
     """Maintains a bunch of logs, generates a final markdown report."""
 
-    def __init__(self, report_dir):
+    def __init__(self, report_dir: str) -> None:
         os.makedirs(report_dir, exist_ok=True)
         self.report_dir = report_dir
 
-    def log(self, section, data):
+    def log(self, section: str, data: Sequence[dict[str, Any] | str | None]) -> str:
         """Log a section of data to the report."""
         slug = slugify(section)
         file_name = f"{slug}.md"
         file_path = os.path.join(self.report_dir, file_name)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(f"## {section}\n")
-            f.write(f"timestamp: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            f.write(
+                f"timestamp: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            )
             for item in data:
                 if not item:
                     # skip falsy values like None or empty dict etc.
@@ -276,12 +308,12 @@ class Report:
             f.write("\n")
         return file_path
 
-    def generate(self):
+    def generate(self) -> str:
         """Generate the final report."""
         report_dir = self.report_dir
         report_file = os.path.join(report_dir, "report.md")
         print(f"Generating report to {report_file}")
-        final_metrics = {} # the most important final metrics we'll add as table at the end
+        final_metrics: dict[str, dict[str, str]] = {}
         start_time = None
         end_time = None
         with open(report_file, "w", encoding="utf-8") as out_file:
@@ -293,12 +325,18 @@ class Report:
                     out_file.write(header_content)
                     start_time = extract_timestamp(header_content, "Run started:")
                     # capture bloat data for summary later (the stuff after Bloat header and until \n\n)
-                    bloat_data = re.search(r"### Bloat\n(.*?)\n\n", header_content, re.DOTALL)
-                    bloat_data = bloat_data.group(1) if bloat_data else ""
+                    bloat_match = re.search(
+                        r"### Bloat\n(.*?)\n\n", header_content, re.DOTALL
+                    )
+                    bloat_data = bloat_match.group(1) if bloat_match else ""
             else:
-                start_time = None # will cause us to not write the total wall clock time
+                start_time = (
+                    None  # will cause us to not write the total wall clock time
+                )
                 bloat_data = "[bloat data missing]"
-                print(f"Warning: {header_file} does not exist. Did you forget to run `nanochat reset`?")
+                print(
+                    f"Warning: {header_file} does not exist. Did you forget to run `nanochat reset`?"
+                )
             # process all the individual sections
             for file_name in EXPECTED_FILES:
                 section_file = os.path.join(report_dir, file_name)
@@ -317,7 +355,9 @@ class Report:
                 if file_name == "chat-evaluation-sft.md":
                     final_metrics["sft"] = extract(section, chat_metrics)
                 if file_name == "chat-evaluation-rl.md":
-                    final_metrics["rl"] = extract(section, "GSM8K") # RL only evals GSM8K
+                    final_metrics["rl"] = extract(
+                        section, "GSM8K"
+                    )  # RL only evals GSM8K
                 # append this section of the report
                 out_file.write(section)
                 out_file.write("\n")
@@ -327,11 +367,13 @@ class Report:
             out_file.write(bloat_data)
             out_file.write("\n\n")
             # Collect all unique metric names
-            all_metrics = set()
+            all_metrics: set[str] = set()
             for stage_metrics in final_metrics.values():
                 all_metrics.update(stage_metrics.keys())
             # Custom ordering: CORE first, ChatCORE last, rest in middle
-            all_metrics = sorted(all_metrics, key=lambda x: (x != "CORE", x == "ChatCORE", x))
+            sorted_metrics = sorted(
+                all_metrics, key=lambda x: (x != "CORE", x == "ChatCORE", x)
+            )
             # Fixed column widths
             stages = ["base", "sft", "rl"]
             metric_width = 15
@@ -347,7 +389,7 @@ class Report:
                 separator += f"{'-' * (value_width + 2)}|"
             out_file.write(separator + "\n")
             # Write table rows
-            for metric in all_metrics:
+            for metric in sorted_metrics:
                 row = f"| {metric.ljust(metric_width)} |"
                 for stage in stages:
                     value = final_metrics.get(stage, {}).get(metric, "-")
@@ -364,11 +406,11 @@ class Report:
             else:
                 out_file.write("Total wall clock time: unknown\n")
         # also cp the report.md file to current directory
-        print(f"Copying report.md to current directory for convenience")
+        print("Copying report.md to current directory for convenience")
         shutil.copy(report_file, "report.md")
         return report_file
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset the report."""
         # Remove section files
         for file_name in EXPECTED_FILES:
@@ -382,38 +424,50 @@ class Report:
         # Generate and write the header section with start timestamp
         header_file = os.path.join(self.report_dir, "header.md")
         header = generate_header()
-        start_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        start_time = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         with open(header_file, "w", encoding="utf-8") as f:
             f.write(header)
             f.write(f"Run started: {start_time}\n\n---\n\n")
         print(f"Reset report and wrote header to {header_file}")
 
+
 # -----------------------------------------------------------------------------
 # nanochat-specific convenience functions
 
+
 class DummyReport:
-    def log(self, *args, **kwargs):
-        pass
-    def reset(self, *args, **kwargs):
+    def log(self, *args: Any, **kwargs: Any) -> None:
         pass
 
-def get_report():
-    # just for convenience, only rank 0 logs to report
-    from src.common.file_os import get_base_dir
-    from src.trainer.distributed import get_dist_info
-    ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
+    def reset(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+
+def get_report() -> Report | DummyReport:
+    """Return the report singleton (rank 0 writes, others use a dummy)."""
+    _, ddp_rank, _, _ = get_dist_info()
     if ddp_rank == 0:
         report_dir = os.path.join(get_base_dir(), "report")
         return Report(report_dir)
     else:
         return DummyReport()
 
+
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Generate or reset nanochat training reports.")
-    parser.add_argument("command", nargs="?", default="generate", choices=["generate", "reset"], help="Operation to perform (default: generate)")
+    parser = argparse.ArgumentParser(
+        description="Generate or reset nanochat training reports."
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="generate",
+        choices=["generate", "reset"],
+        help="Operation to perform (default: generate)",
+    )
     args = parser.parse_args()
     if args.command == "generate":
-        get_report().generate()
+        cast(Report, get_report()).generate()
     elif args.command == "reset":
-        get_report().reset()
+        cast(Report, get_report()).reset()

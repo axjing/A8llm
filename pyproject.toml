@@ -1,0 +1,55 @@
+[project]
+name = "xl-m-primer"
+version = "0.1.0"
+description = "LLM / VLM training and inference framework built on PyTorch"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.24",
+    "tiktoken>=0.5",
+    "rustbpe>=0.1.0",
+    "tokenizers>=0.15",
+    "transformers>=4.35",
+    "datasets>=2.14",
+    "einops>=0.7",
+    "filelock>=3.12",
+    "jinja2>=3.1",
+    "pillow>=10.0",
+    "safetensors>=0.4",
+    "psutil>=5.9",
+    "pyarrow>=14.0",
+    "swanlab>=0.3",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[tool.mypy]
+python_version = "3.10"
+explicit_package_bases = true
+mypy_path = "."
+
+[[tool.mypy.overrides]]
+module = [
+    "torch.*",
+    "tiktoken.*",
+    "rustbpe.*",
+    "tokenizers.*",
+    "transformers.*",
+    "datasets.*",
+    "einops.*",
+    "safetensors.*",
+    "swanlab.*",
+    "torchvision.*",
+    "pyarrow.*",
+    "psutil.*",
+    "yaml.*",
+]
+ignore_missing_imports = true

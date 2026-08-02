@@ -1,8 +1,12 @@
-import re
 import torch
 
 
-def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float('Inf')):
+def top_k_top_p_filtering(
+    logits: torch.Tensor,
+    top_k: int = 0,
+    top_p: float = 1.0,
+    filter_value: float = -float("Inf"),
+) -> torch.Tensor:
     """
     Apply top-k and/or nucleus (top-p) filtering to logits.
     """
@@ -22,8 +26,10 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float('Inf')
 
         # Always keep the first token
         sorted_indices_to_remove[..., 0] = False
-        
-        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+
+        indices_to_remove = sorted_indices_to_remove.scatter(
+            1, sorted_indices, sorted_indices_to_remove
+        )
         logits = logits.masked_fill(indices_to_remove, filter_value)
 
     return logits

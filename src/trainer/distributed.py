@@ -1,29 +1,34 @@
 import os
 from datetime import timedelta
-import torch
-import torch.nn as nn
-import torch.distributed as dist
 
- 
-def init_dist():
-    dist.init_process_group(backend='nccl',timeout=timedelta(minutes=30))
-    local_rank=int(os.environ['LOCAL_RANK'])
+import torch
+import torch.distributed as dist
+from torch import nn
+
+
+def init_dist() -> None:
+    dist.init_process_group(backend="nccl", timeout=timedelta(minutes=30))
+    local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     # torch.cuda.manual_seed(0)
-   
-def is_master():
-    return dist.get_rank()==0 if is_ddp_initialized() else True
 
-def get_world_size():
+
+def is_master() -> bool:
+    return dist.get_rank() == 0 if is_ddp_initialized() else True
+
+
+def get_world_size() -> int:
     return dist.get_world_size() if is_ddp_initialized() else 1
 
-def get_rank():
+
+def get_rank() -> int:
     return dist.get_rank() if is_ddp_initialized() else 0
 
-_CPU_GROUP = None
+
+_CPU_GROUP: dist.ProcessGroup | None = None
 
 
-def _get_cpu_group():
+def _get_cpu_group() -> dist.ProcessGroup:
     """Lazily create a host-RAM gloo group used for object gather.
 
     Must be called collectively by all ranks (it is only invoked from the
@@ -35,7 +40,7 @@ def _get_cpu_group():
     return _CPU_GROUP
 
 
-def distributed_gather(obj):
+def distributed_gather(obj: object) -> list[object]:
     """
     无需分配临时CUDA缓冲区，从所有进程编号中收集**任意**可序列化对象。返回列表格式为[编号0对象、编号1对象……]。
 
@@ -43,133 +48,164 @@ def distributed_gather(obj):
     """
     if not (dist.is_available() and dist.is_initialized()):
         return [obj]
-    
-    result=[None] * dist.get_world_size()
-    dist.all_gather_object(result,obj,group=_get_cpu_group()) # CPU path
-    
+
+    result: list[object] = [None] * dist.get_world_size()
+    dist.all_gather_object(result, obj, group=_get_cpu_group())  # CPU path
+
     return result
 
-def distributed_mean_scalar(x:float|int)->float:
+
+def distributed_mean_scalar(x: float) -> float:
     if not (dist.is_available() and dist.is_initialized()):
         return float(x)
-    
-    t=torch.tensor(x,device=torch.cuda.current_device(),dtype=torch.float32)
-    dist.all_reduce(t,op=dist.ReduceOp.SUM)
-    
-    t/=dist.get_world_size()
+
+    t = torch.tensor(x, device=torch.cuda.current_device(), dtype=torch.float32)
+    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+
+    t /= dist.get_world_size()
     return t.item()
 
-def wrap_model(model):
-    local_rank=int(os.environ['LOCAL_RANK'])
-    return nn.parallel.DistributedDataParallel(model,device_ids=[local_rank])
+
+def wrap_model(model: nn.Module) -> nn.parallel.DistributedDataParallel:
+    local_rank = int(os.environ["LOCAL_RANK"])
+    return nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
+
 
 # The dtype used for compute (matmuls, activations). Master weights stay fp32 for optimizer precision.
 # Linear layers cast their weights to this dtype in forward, replacing torch.amp.autocast.
 # Override with NANOCHAT_DTYPE env var: "bfloat16", "float16", "float32"
-_DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
-def _detect_compute_dtype():
-	env = os.environ.get("NANOCHAT_DTYPE")
-	if env is not None:
-		return _DTYPE_MAP[env], f"set via NANOCHAT_DTYPE={env}"
-	if torch.cuda.is_available():
-		# bf16 requires SM 80+ (Ampere: A100, A10, etc.)
-		# Older GPUs like V100 (SM 70) and T4 (SM 75) only have fp16 tensor cores
-		capability = torch.cuda.get_device_capability()
-		if capability >= (8, 0):
-			return torch.bfloat16, f"auto-detected: CUDA SM {capability[0]}{capability[1]} (bf16 supported)"
-		# fp16 training requires GradScaler (not yet implemented), so fall back to fp32.
-		# Users can still force fp16 via NANOCHAT_DTYPE=float16 if they know what they're doing.
-		return torch.float32, f"auto-detected: CUDA SM {capability[0]}{capability[1]} (pre-Ampere, bf16 not supported, using fp32)"
-	return torch.float32, "auto-detected: no CUDA (CPU/MPS)"
+_DTYPE_MAP = {
+    "bfloat16": torch.bfloat16,
+    "float16": torch.float16,
+    "float32": torch.float32,
+}
+
+
+def _detect_compute_dtype() -> tuple[torch.dtype, str]:
+    env = os.environ.get("NANOCHAT_DTYPE")
+    if env is not None:
+        return _DTYPE_MAP[env], f"set via NANOCHAT_DTYPE={env}"
+    if torch.cuda.is_available():
+        # bf16 requires SM 80+ (Ampere: A100, A10, etc.)
+        # Older GPUs like V100 (SM 70) and T4 (SM 75) only have fp16 tensor cores
+        capability = torch.cuda.get_device_capability()
+        if capability >= (8, 0):
+            return (
+                torch.bfloat16,
+                f"auto-detected: CUDA SM {capability[0]}{capability[1]} (bf16 supported)",
+            )
+        # fp16 training requires GradScaler (not yet implemented), so fall back to fp32.
+        # Users can still force fp16 via NANOCHAT_DTYPE=float16 if they know what they're doing.
+        return (
+            torch.float32,
+            f"auto-detected: CUDA SM {capability[0]}{capability[1]} (pre-Ampere, bf16 not supported, using fp32)",
+        )
+    return torch.float32, "auto-detected: no CUDA (CPU/MPS)"
+
+
 COMPUTE_DTYPE, COMPUTE_DTYPE_REASON = _detect_compute_dtype()
 
+
 def is_ddp_requested() -> bool:
-	"""
-	True if launched by torchrun (env present), even before init.
-	Used to decide whether we *should* initialize a PG.
-	"""
-	return all(k in os.environ for k in ("RANK", "LOCAL_RANK", "WORLD_SIZE"))
+    """
+    True if launched by torchrun (env present), even before init.
+    Used to decide whether we *should* initialize a PG.
+    """
+    return all(k in os.environ for k in ("RANK", "LOCAL_RANK", "WORLD_SIZE"))
+
 
 def is_ddp_initialized() -> bool:
-	"""
-	True if torch.distributed is available and the process group is initialized.
-	Used at cleanup to avoid destroying a non-existent PG.
-	"""
-	return dist.is_available() and dist.is_initialized()
+    """
+    True if torch.distributed is available and the process group is initialized.
+    Used at cleanup to avoid destroying a non-existent PG.
+    """
+    return dist.is_available() and dist.is_initialized()
 
-def get_dist_info():
-	if is_ddp_requested():
-		# We rely on torchrun's env to decide if we SHOULD init.
-		# (Initialization itself happens in compute init.)
-		assert all(var in os.environ for var in ['RANK', 'LOCAL_RANK', 'WORLD_SIZE'])
-		ddp_rank = int(os.environ['RANK'])
-		ddp_local_rank = int(os.environ['LOCAL_RANK'])
-		ddp_world_size = int(os.environ['WORLD_SIZE'])
-		return True, ddp_rank, ddp_local_rank, ddp_world_size
-	else:
-		return False, 0, 0, 1
 
-def autodetect_device_type():
-	# prefer to use CUDA if available, otherwise use MPS, otherwise fallback on CPU
-	if torch.cuda.is_available():
-		device_type = "cuda"
-	elif torch.backends.mps.is_available():
-		device_type = "mps"
-	else:
-		device_type = "cpu"
-	print(f"Autodetected device type: {device_type}")
-	return device_type
+def get_dist_info() -> tuple[bool, int, int, int]:
+    if is_ddp_requested():
+        # We rely on torchrun's env to decide if we SHOULD init.
+        # (Initialization itself happens in compute init.)
+        assert all(var in os.environ for var in ["RANK", "LOCAL_RANK", "WORLD_SIZE"])
+        ddp_rank = int(os.environ["RANK"])
+        ddp_local_rank = int(os.environ["LOCAL_RANK"])
+        ddp_world_size = int(os.environ["WORLD_SIZE"])
+        return True, ddp_rank, ddp_local_rank, ddp_world_size
+    else:
+        return False, 0, 0, 1
 
-def compute_init(device_type="cuda"): # cuda|cpu|mps
-	"""Basic initialization that we keep doing over and over, so make common."""
 
-	assert device_type in ["cuda", "mps", "cpu"], "Invalid device type atm"
-	if device_type == "cuda":
-		assert torch.cuda.is_available(), "Your PyTorch installation is not configured for CUDA but device_type is 'cuda'"
-	if device_type == "mps":
-		assert torch.backends.mps.is_available(), "Your PyTorch installation is not configured for MPS but device_type is 'mps'"
+def autodetect_device_type() -> str:
+    # prefer to use CUDA if available, otherwise use MPS, otherwise fallback on CPU
+    if torch.cuda.is_available():
+        device_type = "cuda"
+    elif torch.backends.mps.is_available():
+        device_type = "mps"
+    else:
+        device_type = "cpu"
+    print(f"Autodetected device type: {device_type}")
+    return device_type
 
-	# Reproducibility
-	# Note that we set the global seeds here, but most of the code uses explicit rng objects.
-	# The only place where global rng might be used is nn.Module initialization of the model weights.
-	torch.manual_seed(42)
-	if device_type == "cuda":
-		torch.cuda.manual_seed(42)
-	# skipping full reproducibility for now, possibly investigate slowdown later
-	# torch.use_deterministic_algorithms(True)
 
-	# Precision
-	if device_type == "cuda":
-		torch.set_float32_matmul_precision("high") # uses tf32 instead of fp32 for matmuls, see https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
+def compute_init(
+    device_type: str = "cuda",
+) -> tuple[bool, int, int, int, torch.device]:
+    """Basic initialization that we keep doing over and over, so make common."""
 
-	# Distributed setup: Distributed Data Parallel (DDP), optional, and requires CUDA
-	is_ddp_requested, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
-	if is_ddp_requested and device_type == "cuda":
-		device = torch.device("cuda", ddp_local_rank)
-		torch.cuda.set_device(device)  # make "cuda" default to this device
-		dist.init_process_group(backend="nccl", device_id=device)
-		dist.barrier()
-	else:
-		device = torch.device(device_type) # mps|cpu
+    assert device_type in ["cuda", "mps", "cpu"], "Invalid device type atm"
+    if device_type == "cuda":
+        assert torch.cuda.is_available(), (
+            "Your PyTorch installation is not configured for CUDA but device_type is 'cuda'"
+        )
+    if device_type == "mps":
+        assert torch.backends.mps.is_available(), (
+            "Your PyTorch installation is not configured for MPS but device_type is 'mps'"
+        )
 
-	if ddp_rank == 0:
-		print(f"Distributed world size: {ddp_world_size}")
+    # Reproducibility
+    # Note that we set the global seeds here, but most of the code uses explicit rng objects.
+    # The only place where global rng might be used is nn.Module initialization of the model weights.
+    torch.manual_seed(42)
+    if device_type == "cuda":
+        torch.cuda.manual_seed(42)
+    # skipping full reproducibility for now, possibly investigate slowdown later
+    # torch.use_deterministic_algorithms(True)
 
-	return is_ddp_requested, ddp_rank, ddp_local_rank, ddp_world_size, device
+    # Precision
+    if device_type == "cuda":
+        torch.set_float32_matmul_precision(
+            "high"
+        )  # uses tf32 instead of fp32 for matmuls, see https://docs.pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
 
-def destory_ddp_process_group():
-	"""
-	清理分布式训练环境，在脚本退出前销毁进程组
-	
-	该函数是 compute_init 的配套函数，用于在脚本退出前清理资源。
-	如果分布式数据并行（DDP）已初始化，则销毁进程组。
-	
-	Returns:
-		None
-	"""
-	if is_ddp_initialized():
-		dist.destroy_process_group()
-  
+    # Distributed setup: Distributed Data Parallel (DDP), optional, and requires CUDA
+    is_ddp_requested, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
+    if is_ddp_requested and device_type == "cuda":
+        device = torch.device("cuda", ddp_local_rank)
+        torch.cuda.set_device(device)  # make "cuda" default to this device
+        dist.init_process_group(backend="nccl", device_id=device)
+        dist.barrier()
+    else:
+        device = torch.device(device_type)  # mps|cpu
+
+    if ddp_rank == 0:
+        print(f"Distributed world size: {ddp_world_size}")
+
+    return is_ddp_requested, ddp_rank, ddp_local_rank, ddp_world_size, device
+
+
+def destory_ddp_process_group() -> None:
+    """
+    清理分布式训练环境，在脚本退出前销毁进程组
+
+    该函数是 compute_init 的配套函数，用于在脚本退出前清理资源。
+    如果分布式数据并行（DDP）已初始化，则销毁进程组。
+
+    Returns:
+            None
+    """
+    if is_ddp_initialized():
+        dist.destroy_process_group()
+
 
 # hardcoded BF16 peak flops for various GPUs
 # inspired by torchtitan: https://github.com/pytorch/torchtitan/blob/main/torchtitan/tools/utils.py
@@ -225,4 +261,4 @@ def get_peak_flops(device_name: str) -> float:
 
     # Unknown GPU - return inf so MFU shows as 0% rather than a wrong guess
     print(f"Peak flops undefined for: {device_name}, MFU will show as 0%")
-    return float('inf')
+    return float("inf")

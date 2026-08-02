@@ -7,9 +7,10 @@ Extracts common logic that is identical across both architectures:
 - Optimizer setup
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-import torch.nn as nn
+import torch
+from torch import nn
 
 if TYPE_CHECKING:
     from src.trainer.optim import MuonAdamW
@@ -18,9 +19,15 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Weight initialization
 
-def init_weights(module: nn.Module, *, rms_norm: bool = True,
-                 std: float = 0.02, n_layers: int = 1,
-                 residual_proj_suffix: str = "c_proj.weight") -> None:
+
+def init_weights(
+    module: nn.Module,
+    *,
+    rms_norm: bool = True,
+    std: float = 0.02,
+    n_layers: int = 1,
+    residual_proj_suffix: str = "c_proj.weight",
+) -> None:
     """Standard transformer weight initialization.
 
     Matches both GPT (with residual scaling) and LlamaTransformer.
@@ -49,12 +56,15 @@ def init_weights(module: nn.Module, *, rms_norm: bool = True,
         nn.init.normal_(module.weight, mean=0.0, std=std)
 
     elif rms_norm and "RMSNorm" in type(module).__name__:
-        module.weight.data.fill_(1.0)
+        # Module-level access only narrows ``weight`` to ``Tensor | Module``
+        # for the base ``nn.Module``; RMSNorm always registers a real weight.
+        weight = cast(torch.Tensor, module.weight)
+        weight.data.fill_(1.0)
 
 
-def scale_residual_projections(model: nn.Module, n_layers: int,
-                               suffix: str = "c_proj.weight",
-                               std: float = 0.02) -> None:
+def scale_residual_projections(
+    model: nn.Module, n_layers: int, suffix: str = "c_proj.weight", std: float = 0.02
+) -> None:
     """Apply GPT-2-style residual projection scaling.
 
     ``std_rescaled = std * (2 * n_layers) ** (-0.5)``
@@ -67,20 +77,27 @@ def scale_residual_projections(model: nn.Module, n_layers: int,
     """
     scaled_std = std * (2 * n_layers) ** (-0.5)
     for _, p in model.named_parameters():
-        if p.ndim == 2 and p.requires_grad:
-            # Heuristic: scale any 2-D param ending with the suffix
-            # (In GPT this is specifically c_proj; LlamaTransformer has none.)
-            if _.endswith(suffix):
-                nn.init.normal_(p, mean=0.0, std=scaled_std)
+        # Heuristic: scale any 2-D param ending with the suffix
+        # (In GPT this is specifically c_proj; LlamaTransformer has none.)
+        if p.ndim == 2 and p.requires_grad and _.endswith(suffix):
+            nn.init.normal_(p, mean=0.0, std=scaled_std)
 
 
 # ---------------------------------------------------------------------------
 # Parameter counting for scaling laws
 
-def count_scaling_params(*, n_layers: int, n_embd: int, n_heads: int,
-                         n_kv_heads: int, n_intermediate: int,
-                         vocab_size: int, n_positions: int,
-                         bias: bool) -> dict[str, int]:
+
+def count_scaling_params(
+    *,
+    n_layers: int,
+    n_embd: int,
+    n_heads: int,
+    n_kv_heads: int,
+    n_intermediate: int,
+    vocab_size: int,
+    n_positions: int,
+    bias: bool,
+) -> dict[str, int]:
     """Compute parameter counts by category for scaling laws analysis.
 
     Works for both GPT (LayerNorm, Conv1D) and LlamaTransformer (RMSNorm, Linear)
@@ -121,15 +138,16 @@ def count_scaling_params(*, n_layers: int, n_embd: int, n_heads: int,
     total = transformer_matrices + embeddings + lm_head
 
     return {
-        'transformer_matrices': transformer_matrices,
-        'embeddings': embeddings,
-        'lm_head': lm_head,
-        'total': total,
+        "transformer_matrices": transformer_matrices,
+        "embeddings": embeddings,
+        "lm_head": lm_head,
+        "total": total,
     }
 
 
 # ---------------------------------------------------------------------------
 # FLOP estimation
+
 
 def estimate_flops(n_params: int, n_positions: int) -> int:
     """Estimate FLOPs per training iteration (forward + backward).
@@ -149,10 +167,19 @@ def estimate_flops(n_params: int, n_positions: int) -> int:
 # ---------------------------------------------------------------------------
 # Optimizer setup helper
 
-def classify_params(model: nn.Module, *,
-                    embed_keywords: tuple[str, ...] = ("wte", "wpe", "token_embedding"),
-                    head_keywords: tuple[str, ...] = ("lm_head", "head"),
-                    min_dim_for_muon: int = 2) -> tuple[list, list, list, list]:
+
+def classify_params(
+    model: nn.Module,
+    *,
+    embed_keywords: tuple[str, ...] = ("wte", "wpe", "token_embedding"),
+    head_keywords: tuple[str, ...] = ("lm_head", "head"),
+    min_dim_for_muon: int = 2,
+) -> tuple[
+    list[tuple[str, nn.Parameter]],
+    list[tuple[str, nn.Parameter]],
+    list[tuple[str, nn.Parameter]],
+    list[tuple[str, nn.Parameter]],
+]:
     """Classify a model's parameters into four groups.
 
     Args:
@@ -220,41 +247,49 @@ def build_muon_optimizer(
 
     param_groups = []
     if embed_params:
-        param_groups.append({
-            'params': [p for _, p in embed_params],
-            'kind': 'adamw',
-            'lr': embed_lr,
-            'betas': (0.9, 0.95),
-            'eps': 1e-8,
-            'weight_decay': 0.0,
-        })
+        param_groups.append(
+            {
+                "params": [p for _, p in embed_params],
+                "kind": "adamw",
+                "lr": embed_lr,
+                "betas": (0.9, 0.95),
+                "eps": 1e-8,
+                "weight_decay": 0.0,
+            }
+        )
     if head_params:
-        param_groups.append({
-            'params': [p for _, p in head_params],
-            'kind': 'adamw',
-            'lr': head_lr,
-            'betas': (0.9, 0.95),
-            'eps': 1e-8,
-            'weight_decay': weight_decay,
-        })
+        param_groups.append(
+            {
+                "params": [p for _, p in head_params],
+                "kind": "adamw",
+                "lr": head_lr,
+                "betas": (0.9, 0.95),
+                "eps": 1e-8,
+                "weight_decay": weight_decay,
+            }
+        )
     if scalar_params:
-        param_groups.append({
-            'params': [p for _, p in scalar_params],
-            'kind': 'adamw',
-            'lr': scalar_lr,
-            'betas': (0.9, 0.95),
-            'eps': 1e-8,
-            'weight_decay': weight_decay,
-        })
+        param_groups.append(
+            {
+                "params": [p for _, p in scalar_params],
+                "kind": "adamw",
+                "lr": scalar_lr,
+                "betas": (0.9, 0.95),
+                "eps": 1e-8,
+                "weight_decay": weight_decay,
+            }
+        )
     if matrix_params:
-        param_groups.append({
-            'params': [p for _, p in matrix_params],
-            'kind': 'muon',
-            'lr': matrix_lr,
-            'momentum': momentum,
-            'ns_steps': ns_steps,
-            'beta2': 0.0,
-            'weight_decay': weight_decay,
-        })
+        param_groups.append(
+            {
+                "params": [p for _, p in matrix_params],
+                "kind": "muon",
+                "lr": matrix_lr,
+                "momentum": momentum,
+                "ns_steps": ns_steps,
+                "beta2": 0.0,
+                "weight_decay": weight_decay,
+            }
+        )
 
     return MuonAdamW(param_groups)

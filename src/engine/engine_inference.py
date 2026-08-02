@@ -1,4 +1,4 @@
-""" 
+"""
 用于高效推理模型的引擎。
 
 所有操作均围绕token序列展开：
@@ -11,40 +11,42 @@
 整体设计尽可能追求高效。
 """
 
-
 import ast
 import inspect
 import re
-import warnings
 from collections import deque
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
 
+from src.models.config import LLMConfig
+from src.models.gpt import GPT
 from src.trainer.distributed import autodetect_device_type, compute_init
 
 
 # -----------------------------------------------------------------------------
 # Calculator tool helpers
 @contextmanager
-def _null_context():
+def _null_context() -> Iterator[None]:
     # kept for API compatibility if needed elsewhere
     yield
 
 
-def _safe_eval_math(expr: str):
+def _safe_eval_math(expr: str) -> int | float | None:
     """Safely evaluate simple math expressions using AST.
 
     Supported operators: +, -, *, /, % and unary +/-. Power (**) and any calls
     or names are disallowed.
     """
     try:
-        node = ast.parse(expr, mode='eval')
-    except Exception:
+        node = ast.parse(expr, mode="eval")
+    except (SyntaxError, ValueError):
         return None
 
-    def _check_and_eval(n):
+    def _check_and_eval(n: ast.AST) -> int | float | None:
         if isinstance(n, ast.Expression):
             return _check_and_eval(n.body)
         if isinstance(n, ast.BinOp):
@@ -79,7 +81,7 @@ def _safe_eval_math(expr: str):
             return None
         # For Python <3.8 compatibility, Num
         if isinstance(n, ast.Num):
-            return n.n
+            return cast(int | float, n.n)
         # All other node types disallowed
         return None
 
@@ -97,7 +99,7 @@ def _safe_eval_math(expr: str):
 _STR_COUNT_RE = re.compile(r"^\s*(['\"])(.*)\1\.count\(\s*(['\"])(.*)\3\s*\)\s*$")
 
 
-def use_calculator(expr: str):
+def use_calculator(expr: str) -> int | float | None:
     """Evaluate restricted expressions: simple math or '<str>'.count('<sub>')"""
     if not isinstance(expr, str):
         return None
@@ -106,7 +108,19 @@ def use_calculator(expr: str):
 
     # Quick reject dangerous tokens
     low = expr.lower()
-    for bad in ['__', 'import', 'exec', 'eval', 'compile', 'open', 'input', 'globals', 'locals', 'getattr', 'setattr']:
+    for bad in [
+        "__",
+        "import",
+        "exec",
+        "eval",
+        "compile",
+        "open",
+        "input",
+        "globals",
+        "locals",
+        "getattr",
+        "setattr",
+    ]:
         if bad in low:
             return None
 
@@ -123,10 +137,11 @@ def use_calculator(expr: str):
         needle = m.group(4)
         try:
             return hay.count(needle)
-        except Exception:
+        except (TypeError, ValueError):
             return None
 
     return None
+
 
 # -----------------------------------------------------------------------------
 class KVCache:
@@ -139,40 +154,51 @@ class KVCache:
     - Position tracked per batch element via cache_seqlens tensor
     """
 
-    def __init__(self, batch_size, num_heads, seq_len, head_dim, num_layers, device, dtype):
-        self.batch_size = batch_size
-        self.max_seq_len = seq_len
-        self.n_layers = num_layers
-        self.n_heads = num_heads
-        self.head_dim = head_dim
+    def __init__(
+        self,
+        batch_size: int,
+        num_heads: int,
+        seq_len: int,
+        head_dim: int,
+        num_layers: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        self.batch_size: int = batch_size
+        self.max_seq_len: int = seq_len
+        self.n_layers: int = num_layers
+        self.n_heads: int = num_heads
+        self.head_dim: int = head_dim
         # Lazy allocation for cache tensors to avoid huge upfront allocations.
         # `seq_len` is treated as a maximum hint; actual buffers are allocated
         # only when needed via `_ensure_capacity` or during prefill.
-        self._device = device
-        self._dtype = dtype
-        self._alloc_len = 0  # current allocated time dimension
-        self.k_cache = None
-        self.v_cache = None
+        self._device: torch.device = device
+        self._dtype: torch.dtype = dtype
+        self._alloc_len: int = 0  # current allocated time dimension
+        self.k_cache: torch.Tensor | None = None
+        self.v_cache: torch.Tensor | None = None
         # Current sequence length per batch element (FA3 needs int32)
-        self.cache_seqlens = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self.cache_seqlens: torch.Tensor = torch.zeros(
+            batch_size, dtype=torch.int32, device=device
+        )
         # Previous token's normalized embedding for smear (set by model forward pass)
-        self.prev_embedding = None
+        self.prev_embedding: torch.Tensor | None = None
 
         # Heuristic: allocate immediately in the common prefill case when
         # batch_size==1 and seq_len is small, otherwise postpone allocation.
         try:
             hint = int(seq_len)
-        except Exception:
+        except (TypeError, ValueError):
             hint = 0
         if batch_size == 1 and hint > 0 and hint <= 4096:
             self._ensure_capacity(hint)
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset cache to empty state."""
         self.cache_seqlens.zero_()
         self.prev_embedding = None
 
-    def _ensure_capacity(self, required_len: int):
+    def _ensure_capacity(self, required_len: int) -> None:
         """Ensure k_cache/v_cache have capacity for `required_len` sequence length.
 
         If current allocation is smaller, allocate new tensors with the same
@@ -182,10 +208,20 @@ class KVCache:
             return
         # clamp to max_seq_len if provided (>0)
         target = required_len
-        if hasattr(self, 'max_seq_len') and self.max_seq_len is not None and self.max_seq_len > 0:
+        if (
+            hasattr(self, "max_seq_len")
+            and self.max_seq_len is not None
+            and self.max_seq_len > 0
+        ):
             target = min(target, self.max_seq_len)
 
-        new_shape = (self.n_layers, self.batch_size, target, self.n_heads, self.head_dim)
+        new_shape = (
+            self.n_layers,
+            self.batch_size,
+            target,
+            self.n_heads,
+            self.head_dim,
+        )
         # allocate new buffers
         new_k = torch.empty(new_shape, device=self._device, dtype=self._dtype)
         new_v = torch.empty(new_shape, device=self._device, dtype=self._dtype)
@@ -193,7 +229,7 @@ class KVCache:
         new_k.zero_()
         new_v.zero_()
         # copy old data if present
-        if self.k_cache is not None:
+        if self.k_cache is not None and self.v_cache is not None:
             old_len = self._alloc_len
             new_k[:, :, :old_len, :, :].copy_(self.k_cache)
             new_v[:, :, :old_len, :, :].copy_(self.v_cache)
@@ -202,17 +238,19 @@ class KVCache:
         self.v_cache = new_v
         self._alloc_len = target
 
-    def get_pos(self):
+    def get_pos(self) -> int:
         """Get current position (assumes all batch elements at same position)."""
-        return self.cache_seqlens[0].item()
+        return int(self.cache_seqlens[0].item())
 
-    def get_layer_cache(self, layer_idx):
+    def get_layer_cache(
+        self, layer_idx: int
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """Return (k_cache, v_cache) views for a specific layer."""
         if self.k_cache is None or self.v_cache is None:
             return None, None
         return self.k_cache[layer_idx], self.v_cache[layer_idx]
 
-    def advance(self, num_tokens):
+    def advance(self, num_tokens: int) -> None:
         """Advance the cache position by num_tokens."""
         # ensure we have room for the advance
         max_pos = int(self.cache_seqlens.max().item() + num_tokens)
@@ -220,30 +258,46 @@ class KVCache:
             self._ensure_capacity(max_pos)
         self.cache_seqlens += num_tokens
 
-    def prefill(self, other):
+    def prefill(self, other: "KVCache") -> None:
         """
         Copy cached KV from another cache into this one.
         Used when we do batch=1 prefill and then want to generate multiple samples in parallel.
         """
         assert self.get_pos() == 0, "Cannot prefill a non-empty KV cache"
-        assert self.n_layers == other.n_layers and self.n_heads == other.n_heads and self.head_dim == other.head_dim
+        assert (
+            self.n_layers == other.n_layers
+            and self.n_heads == other.n_heads
+            and self.head_dim == other.head_dim
+        )
         other_pos = other.get_pos()
         # ensure capacity for other_pos
         if other_pos > 0:
             self._ensure_capacity(other_pos)
             # copy the underlying tensors
-            if other.k_cache is not None:
-                self.k_cache[:, :, :other_pos, :, :].copy_(other.k_cache[:, :, :other_pos, :, :])
-            if other.v_cache is not None:
-                self.v_cache[:, :, :other_pos, :, :].copy_(other.v_cache[:, :, :other_pos, :, :])
+            if self.k_cache is not None and other.k_cache is not None:
+                self.k_cache[:, :, :other_pos, :, :].copy_(
+                    other.k_cache[:, :, :other_pos, :, :]
+                )
+            if self.v_cache is not None and other.v_cache is not None:
+                self.v_cache[:, :, :other_pos, :, :].copy_(
+                    other.v_cache[:, :, :other_pos, :, :]
+                )
             self.cache_seqlens.fill_(other_pos)
         # Copy smear state: expand batch=1 prev_embedding to num_samples
         if other.prev_embedding is not None:
-            self.prev_embedding = other.prev_embedding.expand(self.batch_size, -1, -1).clone()
+            self.prev_embedding = other.prev_embedding.expand(
+                self.batch_size, -1, -1
+            ).clone()
+
 
 # -----------------------------------------------------------------------------
 @torch.inference_mode()
-def sample_next_token(logits, rng, temperature=1.0, top_k=None):
+def sample_next_token(
+    logits: torch.Tensor,
+    rng: torch.Generator,
+    temperature: float = 1.0,
+    top_k: int | None = None,
+) -> torch.Tensor:
     """Sample a single next token from given logits of shape (B, vocab_size). Returns (B, 1)."""
     assert temperature >= 0.0, "temperature must be non-negative"
     if temperature == 0.0:
@@ -260,36 +314,46 @@ def sample_next_token(logits, rng, temperature=1.0, top_k=None):
         probs = F.softmax(logits, dim=-1)
         return torch.multinomial(probs, num_samples=1, generator=rng)
 
+
 # -----------------------------------------------------------------------------
+
 
 class RowState:
     # Per-row state tracking during generation
-    def __init__(self, current_tokens=None):
-        self.current_tokens = current_tokens or [] # Current token sequence for this row
-        self.forced_tokens = deque() # Queue of tokens to force inject
-        self.in_python_block = False # Whether we are inside a python block
-        self.python_expr_tokens = [] # Tokens of the current python expression
-        self.completed = False # Whether this row has completed generation
+    def __init__(self, current_tokens: list[int] | None = None) -> None:
+        self.current_tokens: list[int] = (
+            current_tokens or []
+        )  # Current token sequence for this row
+        self.forced_tokens: deque[int] = deque()  # Queue of tokens to force inject
+        self.in_python_block: bool = False  # Whether we are inside a python block
+        self.python_expr_tokens: list[
+            int
+        ] = []  # Tokens of the current python expression
+        self.completed: bool = False  # Whether this row has completed generation
+
 
 class Engine:
-
-    def __init__(self, model, tokenizer):
+    def __init__(self, model: Any, tokenizer: Any) -> None:
+        # model/tokenizer are intentionally Any: the engine dispatches dynamically on
+        # forward(config) signatures shared by GPT/LlamaTransformer/HF models and mocks.
         self.model = model
-        self.tokenizer = tokenizer # needed for tool use
+        self.tokenizer = tokenizer  # needed for tool use
 
-    def _get_device(self):
+    def _get_device(self) -> torch.device:
         """Return the device the model lives on."""
         get_device = getattr(self.model, "get_device", None)
         if callable(get_device):
-            return get_device()
-        param = next(self.model.parameters(), None)
+            device = get_device()
+            if isinstance(device, torch.device):
+                return device
+        param: torch.Tensor | None = next(self.model.parameters(), None)
         if param is not None:
             return param.device
         raise RuntimeError("Unable to determine the model's device")
 
-    def _special_tokens(self):
+    def _special_tokens(self) -> dict[str, Any]:
         """Resolve the special tokens used by the tool-use state machine."""
-        get_special = lambda s: self.tokenizer.encode_special(s)
+        get_special: Callable[[str], Any] = lambda s: self.tokenizer.encode_special(s)
         return {
             "python_start": get_special("<|python_start|>"),
             "python_end": get_special("<|python_end|>"),
@@ -299,17 +363,24 @@ class Engine:
             "bos": self.tokenizer.get_bos_token_id(),
         }
 
-    def _supports_fa3_cache(self):
+    def _supports_fa3_cache(self) -> bool:
         """True if the model exposes the FA3-style KVCache forward interface."""
         try:
             if "kv_cache" not in inspect.signature(self.model.forward).parameters:
                 return False
             cfg = self.model.config
-            return all(hasattr(cfg, attr) for attr in ("n_kv_head", "n_layer", "sequence_len"))
-        except Exception:
+            return all(
+                hasattr(cfg, attr) for attr in ("n_kv_head", "n_layer", "sequence_len")
+            )
+        except (AttributeError, TypeError, ValueError):
             return False
 
-    def _process_rows(self, row_states, sampled_tokens, special):
+    def _process_rows(
+        self,
+        row_states: list[RowState],
+        sampled_tokens: list[int],
+        special: dict[str, Any],
+    ) -> tuple[list[int], list[int]]:
         """Choose the next token for each row and update the tool-use state.
 
         Args:
@@ -326,7 +397,9 @@ class Engine:
         for i, state in enumerate(row_states):
             is_forced = len(state.forced_tokens) > 0
             token_masks.append(0 if is_forced else 1)
-            next_token = state.forced_tokens.popleft() if is_forced else sampled_tokens[i]
+            next_token = (
+                state.forced_tokens.popleft() if is_forced else sampled_tokens[i]
+            )
             token_column.append(next_token)
             state.current_tokens.append(next_token)
             # On <|assistant_end|> or <|bos|>, mark the row as completed
@@ -352,31 +425,73 @@ class Engine:
         return token_column, token_masks
 
     @torch.inference_mode()
-    def generate(self, tokens, num_samples=1, max_tokens=None, temperature=1.0, top_k=None, seed=42):
+    def generate(
+        self,
+        tokens: list[int],
+        num_samples: int = 1,
+        max_tokens: int | None = None,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+        seed: int = 42,
+    ) -> Iterator[tuple[list[int], list[int]]]:
         """Generate `num_samples` sequences from a shared prompt, one token at a time.
 
         Uses the model's FA3-style KV cache when available (single prefill, then
         cache replication); otherwise falls back to recomputing the full context,
         which works for models without a native KV cache (e.g. GPT).
         """
-        assert isinstance(tokens, list) and tokens and isinstance(tokens[0], int), "expecting list of ints"
+        assert isinstance(tokens, list) and tokens and isinstance(tokens[0], int), (
+            "expecting list of ints"
+        )
         device = self._get_device()
         rng = torch.Generator(device=device)
         rng.manual_seed(seed)
         special = self._special_tokens()
 
         if self._supports_fa3_cache():
-            yield from self._generate_fa3(tokens, num_samples, max_tokens, temperature, top_k, rng, device, special)
+            yield from self._generate_fa3(
+                tokens,
+                num_samples,
+                max_tokens,
+                temperature,
+                top_k,
+                rng,
+                device,
+                special,
+            )
         else:
-            yield from self._generate_recompute(tokens, num_samples, max_tokens, temperature, top_k, rng, device, special)
+            yield from self._generate_recompute(
+                tokens,
+                num_samples,
+                max_tokens,
+                temperature,
+                top_k,
+                rng,
+                device,
+                special,
+            )
 
-    def _generate_fa3(self, tokens, num_samples, max_tokens, temperature, top_k, rng, device, special):
+    def _generate_fa3(
+        self,
+        tokens: list[int],
+        num_samples: int,
+        max_tokens: int | None,
+        temperature: float,
+        top_k: int | None,
+        rng: torch.Generator,
+        device: torch.device,
+        special: dict[str, Any],
+    ) -> Iterator[tuple[list[int], list[int]]]:
         """KV-cache generation using the FA3-style KVCache (flash_attn_with_kvcache) interface."""
         # NOTE: cuda -> bfloat16, everything else -> float32. See the previous comment:
         # this repo-wide assumption should eventually be replaced by explicit dtype tracking.
         dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
         m = self.model.config
-        kv_model_kwargs = {"num_heads": m.n_kv_head, "head_dim": m.n_embd // m.n_head, "num_layers": m.n_layer}
+        kv_model_kwargs = {
+            "num_heads": m.n_kv_head,
+            "head_dim": m.n_embd // m.n_head,
+            "num_layers": m.n_layer,
+        }
 
         # 1) Run a batch-1 prefill of the prompt tokens
         kv_cache_prefill = KVCache(
@@ -391,7 +506,11 @@ class Engine:
         logits = logits[:, -1, :].expand(num_samples, -1)  # (num_samples, vocab_size)
 
         # 2) Replicate the KV cache for each sample/row
-        kv_length_hint = (len(tokens) + max_tokens) if max_tokens is not None else self.model.config.sequence_len
+        kv_length_hint = (
+            (len(tokens) + max_tokens)
+            if max_tokens is not None
+            else self.model.config.sequence_len
+        )
         kv_cache_decode = KVCache(
             batch_size=num_samples,
             seq_len=kv_length_hint,
@@ -400,7 +519,7 @@ class Engine:
             **kv_model_kwargs,
         )
         kv_cache_decode.prefill(kv_cache_prefill)
-        del kv_cache_prefill # no need to keep this memory around
+        del kv_cache_prefill  # no need to keep this memory around
 
         row_states = [RowState(tokens.copy()) for _ in range(num_samples)]
         num_generated = 0
@@ -414,20 +533,40 @@ class Engine:
 
             next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
             sampled_tokens = next_ids[:, 0].tolist()
-            token_column, token_masks = self._process_rows(row_states, sampled_tokens, special)
+            token_column, token_masks = self._process_rows(
+                row_states, sampled_tokens, special
+            )
 
             yield token_column, token_masks
             num_generated += 1
 
             # Prepare logits for the next iteration
-            ids = torch.tensor(token_column, dtype=torch.long, device=device).unsqueeze(1)
-            logits = self.model.forward(ids, kv_cache=kv_cache_decode)[:, -1, :]  # (B, vocab_size)
+            ids = torch.tensor(token_column, dtype=torch.long, device=device).unsqueeze(
+                1
+            )
+            logits = self.model.forward(ids, kv_cache=kv_cache_decode)[
+                :, -1, :
+            ]  # (B, vocab_size)
 
-    def _generate_recompute(self, tokens, num_samples, max_tokens, temperature, top_k, rng, device, special):
+    def _generate_recompute(
+        self,
+        tokens: list[int],
+        num_samples: int,
+        max_tokens: int | None,
+        temperature: float,
+        top_k: int | None,
+        rng: torch.Generator,
+        device: torch.device,
+        special: dict[str, Any],
+    ) -> Iterator[tuple[list[int], list[int]]]:
         """Generation fallback for models without a native KV cache (recomputes the full context each step)."""
         n_positions = getattr(self.model.config, "n_positions", None)
         with torch.inference_mode():
-            context = torch.tensor([tokens], dtype=torch.long, device=device).expand(num_samples, -1).clone()
+            context = (
+                torch.tensor([tokens], dtype=torch.long, device=device)
+                .expand(num_samples, -1)
+                .clone()
+            )
             logits, _ = self.model.forward(context)
             logits = logits[:, -1, :]  # (B, vocab_size)
 
@@ -443,20 +582,26 @@ class Engine:
 
                 next_ids = sample_next_token(logits, rng, temperature, top_k)  # (B, 1)
                 sampled_tokens = next_ids[:, 0].tolist()
-                token_column, token_masks = self._process_rows(row_states, sampled_tokens, special)
+                token_column, token_masks = self._process_rows(
+                    row_states, sampled_tokens, special
+                )
 
                 yield token_column, token_masks
                 num_generated += 1
 
                 # Append the selected tokens and recompute over the (possibly truncated) context.
-                new_ids = torch.tensor(token_column, dtype=torch.long, device=device).unsqueeze(1)
+                new_ids = torch.tensor(
+                    token_column, dtype=torch.long, device=device
+                ).unsqueeze(1)
                 context = torch.cat([context, new_ids], dim=1)
                 if n_positions is not None and context.size(1) > n_positions:
                     context = context[:, -n_positions:]
                 logits, _ = self.model.forward(context)
                 logits = logits[:, -1, :]  # (B, vocab_size)
 
-    def generate_batch(self, tokens, num_samples=1, **kwargs):
+    def generate_batch(
+        self, tokens: list[int], num_samples: int = 1, **kwargs: Any
+    ) -> tuple[list[list[int]], list[list[int]]]:
         """
         Non-streaming batch generation that just returns the final token sequences.
         Returns a list of token sequences (list of lists of ints).
@@ -486,8 +631,6 @@ if __name__ == "__main__":
     Smoke test: make sure Engine.generate is equivalent to a naive greedy
     autoregressive decoding loop on a small GPT model.
     """
-    from src.models.config import LLMConfig
-    from src.models.gpt import GPT
 
     class MockTokenizer:
         def __init__(self) -> None:
@@ -515,21 +658,28 @@ if __name__ == "__main__":
             return "".join(chr(int(t) % 256) for t in tokens)
 
     device_type = autodetect_device_type()
-    _, _, _, _, device = compute_init(device_type)
+    device = compute_init(device_type)[-1]
     cfg = LLMConfig(
-        vocab_size=256, n_embd=64, n_layers=2, n_heads=4,
-        n_kv_heads=4, n_positions=128, bias=True,
+        vocab_size=256,
+        n_embd=64,
+        n_layers=2,
+        n_heads=4,
+        n_kv_heads=4,
+        n_positions=128,
+        bias=True,
     )
     model = GPT(cfg).to(device).eval()
     tokenizer = MockTokenizer()
 
     prompt_tokens = tokenizer.encode("hello world")
     max_tokens: int = 32
-    kwargs = {"max_tokens": max_tokens, "temperature": 0.0}
+    kwargs: dict[str, Any] = {"max_tokens": max_tokens, "temperature": 0.0}
 
     engine = Engine(model, tokenizer)
     generated = []
-    for token_column, _ in engine.generate(prompt_tokens, num_samples=1, **kwargs):
+    for token_column, token_masks in engine.generate(
+        prompt_tokens, num_samples=1, **kwargs
+    ):
         generated.append(token_column[0])
 
     reference = []
@@ -541,7 +691,10 @@ if __name__ == "__main__":
             reference.append(ref_token)
             if ref_token == tokenizer.get_bos_token_id():
                 break
-            context = torch.cat([context, torch.tensor([[ref_token]], dtype=torch.long, device=device)], dim=1)
+            context = torch.cat(
+                [context, torch.tensor([[ref_token]], dtype=torch.long, device=device)],
+                dim=1,
+            )
 
     print(f"Engine:    {tokenizer.decode(generated)}")
     print(f"Reference: {tokenizer.decode(reference)}")

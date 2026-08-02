@@ -69,8 +69,11 @@ subtly different floating-point rounding paths under torch.compile, since Induct
 generates a different graph. Numerics are bitwise identical in eager mode.
 """
 
+from collections.abc import Callable
+from typing import Any, cast
+
 import torch
-import torch.nn as nn
+from torch import nn
 
 from src.trainer.distributed import COMPUTE_DTYPE
 
@@ -79,7 +82,9 @@ EPS = 1e-12
 
 
 @torch.no_grad()
-def _to_fp8(x, fp8_dtype):
+def _to_fp8(
+    x: torch.Tensor, fp8_dtype: torch.dtype
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Dynamically quantize a tensor to FP8 using tensorwise scaling.
 
     "Tensorwise" means one scalar scale for the entire tensor (as opposed to
@@ -107,7 +112,7 @@ def _to_fp8(x, fp8_dtype):
     return x_fp8, inv_scale
 
 
-def _to_col_major(x):
+def _to_col_major(x: torch.Tensor) -> torch.Tensor:
     """Rearrange a 2D tensor's memory to column-major layout.
 
     torch._scaled_mm requires its second operand in column-major layout.
@@ -130,7 +135,7 @@ class _Float8Matmul(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, input_2d, weight):
+    def forward(ctx: Any, input_2d: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
         # Quantize both operands to e4m3 (higher precision format)
         input_fp8, input_inv = _to_fp8(input_2d, torch.float8_e4m3fn)
         weight_fp8, weight_inv = _to_fp8(weight, torch.float8_e4m3fn)
@@ -154,7 +159,9 @@ class _Float8Matmul(torch.autograd.Function):
         return output
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(
+        ctx: Any, grad_output: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         in_fp8, in_inv, w_fp8, w_inv = ctx.saved_tensors
 
         # === GEMM 1: grad_input = grad_output @ weight ===
@@ -179,7 +186,7 @@ class _Float8Matmul(torch.autograd.Function):
         # Transposing gives column-major, but first arg needs row-major,
         # so we must call .contiguous() to physically rearrange the memory.
         go_T = go_fp8.t().contiguous()  # [N, B] row-major
-        in_col = _to_col_major(in_fp8)    # [B, K] column-major
+        in_col = _to_col_major(in_fp8)  # [B, K] column-major
         grad_weight = torch._scaled_mm(
             go_T,
             in_col,
@@ -199,21 +206,26 @@ class Float8Linear(nn.Linear):
     Only the matmul is performed in FP8 via the _Float8Matmul autograd function.
     """
 
-    def forward(self, input):
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         # Cast input to COMPUTE_DTYPE (typically bf16) since _scaled_mm expects
         # reduced precision input, and we no longer rely on autocast to do this.
         input = input.to(COMPUTE_DTYPE)
         # _scaled_mm only works on 2D tensors, so flatten batch dimensions
         orig_shape = input.shape
         input_2d = input.reshape(-1, orig_shape[-1])
-        output = _Float8Matmul.apply(input_2d, self.weight)
+        output = cast(
+            torch.Tensor,
+            _Float8Matmul.apply(  # type: ignore[no-untyped-call]
+                input_2d, self.weight
+            ),
+        )
         output = output.reshape(*orig_shape[:-1], output.shape[-1])
         if self.bias is not None:
             output = output + self.bias.to(output.dtype)
         return output
 
     @classmethod
-    def from_float(cls, mod):
+    def from_float(cls, mod: nn.Linear) -> "Float8Linear":
         """Create Float8Linear from nn.Linear, sharing the same weight and bias.
 
         Uses meta device to avoid allocating a temporary weight tensor — we
@@ -231,7 +243,7 @@ class Float8LinearConfig:
     """Minimal config matching torchao's API. Only tensorwise recipe is supported."""
 
     @staticmethod
-    def from_recipe_name(recipe_name):
+    def from_recipe_name(recipe_name: str) -> "Float8LinearConfig":
         if recipe_name != "tensorwise":
             raise ValueError(
                 f"Only 'tensorwise' recipe is supported, got '{recipe_name}'. "
@@ -240,7 +252,12 @@ class Float8LinearConfig:
         return Float8LinearConfig()
 
 
-def convert_to_float8_training(module, *, config=None, module_filter_fn=None):
+def convert_to_float8_training(
+    module: nn.Module,
+    *,
+    config: Float8LinearConfig | None = None,
+    module_filter_fn: Callable[[nn.Module, str], bool] | None = None,
+) -> nn.Module:
     """Replace nn.Linear layers with Float8Linear throughout a module.
 
     Walks the module tree in post-order (children before parents) and swaps
@@ -254,13 +271,17 @@ def convert_to_float8_training(module, *, config=None, module_filter_fn=None):
             are converted. Common use: skip layers with dims not divisible by 16
             (hardware requirement for FP8 matmuls on H100).
     """
-    def _convert(mod, prefix=""):
+
+    def _convert(mod: nn.Module, prefix: str = "") -> None:
         for name, child in mod.named_children():
             fqn = f"{prefix}.{name}" if prefix else name
             _convert(child, fqn)
-            if isinstance(child, nn.Linear) and not isinstance(child, Float8Linear):
-                if module_filter_fn is None or module_filter_fn(child, fqn):
-                    setattr(mod, name, Float8Linear.from_float(child))
+            if (
+                isinstance(child, nn.Linear)
+                and not isinstance(child, Float8Linear)
+                and (module_filter_fn is None or module_filter_fn(child, fqn))
+            ):
+                setattr(mod, name, Float8Linear.from_float(child))
 
     _convert(module)
     return module

@@ -13,6 +13,8 @@ y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
 y = flash_attn.flash_attn_with_kvcache(q, k_cache, v_cache, k=k, v=v, ...)
 """
 
+from typing import Any, cast
+
 import torch
 import torch.nn.functional as F
 
@@ -20,8 +22,12 @@ import torch.nn.functional as F
 # =============================================================================
 # Detection: Try to load FA3 on Hopper+ GPUs
 # =============================================================================
-def _load_flash_attention_3():
-    """Try to load Flash Attention 3 (requires Hopper GPU, sm90)."""
+def _load_flash_attention_3() -> Any:
+    """Try to load Flash Attention 3 (requires Hopper GPU, sm90).
+
+    Returns the FA3 kernel module interface, which is an untyped third-party
+    dynamic interface (returned ``Any``); callers narrow it at the use site.
+    """
     if not torch.cuda.is_available():
         return None
     try:
@@ -31,36 +37,38 @@ def _load_flash_attention_3():
         if major != 9:
             return None
         import os
+
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-        from kernels import get_kernel
-        return get_kernel('varunneal/flash-attention-3').flash_attn_interface
-    except Exception:
+        from kernels import get_kernel  # type: ignore[import-not-found]
+
+        return get_kernel("varunneal/flash-attention-3").flash_attn_interface
+    except (ImportError, AttributeError, OSError, RuntimeError, ValueError):
         return None
 
 
-_fa3 = _load_flash_attention_3()
+_fa3: Any = _load_flash_attention_3()
 HAS_FA3 = _fa3 is not None
 
 # Override for testing: set to 'fa3', 'sdpa', or None (auto)
-_override_impl = None
+_override_impl: str | None = None
 
 
-def _resolve_use_fa3():
+def _resolve_use_fa3() -> bool:
     """
     根据可用性、覆盖规则和数据类型，一次性决定是否使用FA3
     """
-    if _override_impl == 'fa3':
+    if _override_impl == "fa3":
         assert HAS_FA3, "Cannot override to FA3: not available on this hardware"
         return True
-    if _override_impl == 'sdpa':
+    if _override_impl == "sdpa":
         return False
     if HAS_FA3:
         # FA3 Hopper kernels only support bf16 and fp8; fp16/fp32 must use SDPA fallback
         from src.trainer.distributed import COMPUTE_DTYPE
-        if COMPUTE_DTYPE == torch.bfloat16:
-            return True
-        return False
+
+        return COMPUTE_DTYPE == torch.bfloat16
     return False
+
 
 USE_FA3 = _resolve_use_fa3()
 
@@ -68,7 +76,13 @@ USE_FA3 = _resolve_use_fa3()
 # =============================================================================
 # SDPA helpers
 # =============================================================================
-def _sdpa_attention(q, k, v, window_size, enable_gqa):
+def _sdpa_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    window_size: tuple[int, int],
+    enable_gqa: bool,
+) -> torch.Tensor:
     """
     SDPA attention with sliding window support.
     q, k, v are (B, H, T, D) format.
@@ -79,7 +93,9 @@ def _sdpa_attention(q, k, v, window_size, enable_gqa):
 
     # Full context, same length
     if (window < 0 or window >= Tq) and Tq == Tk:
-        return F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
+        return F.scaled_dot_product_attention(
+            q, k, v, is_causal=True, enable_gqa=enable_gqa
+        )
 
     # Single token generation
     if Tq == 1:
@@ -88,7 +104,9 @@ def _sdpa_attention(q, k, v, window_size, enable_gqa):
             start = max(0, Tk - (window + 1))
             k = k[:, :, start:, :]
             v = v[:, :, start:, :]
-        return F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=enable_gqa)
+        return F.scaled_dot_product_attention(
+            q, k, v, is_causal=False, enable_gqa=enable_gqa
+        )
 
     # Need explicit mask for sliding window/chunk inference
     device = q.device
@@ -101,12 +119,21 @@ def _sdpa_attention(q, k, v, window_size, enable_gqa):
     if window >= 0 and window < Tk:
         mask = mask & ((row_idx - col_idx) <= window)
 
-    return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=enable_gqa)
+    return F.scaled_dot_product_attention(
+        q, k, v, attn_mask=mask, enable_gqa=enable_gqa
+    )
+
 
 # =============================================================================
 # Public API: Same interface as FA3
 # =============================================================================
-def flash_attn_func(q, k, v, causal=False, window_size=(-1, -1)):
+def flash_attn_func(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    causal: bool = False,
+    window_size: tuple[int, int] = (-1, -1),
+) -> torch.Tensor:
     """
     Flash Attention for training (no KV cache).
 
@@ -119,7 +146,10 @@ def flash_attn_func(q, k, v, causal=False, window_size=(-1, -1)):
         Output tensor of shape (B, T, H, D)
     """
     if USE_FA3:
-        return _fa3.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
+        return cast(
+            torch.Tensor,
+            _fa3.flash_attn_func(q, k, v, causal=causal, window_size=window_size),
+        )
 
     # SDPA fallback: transpose (B, T, H, D) -> (B, H, T, D)
     q = q.transpose(1, 2)
@@ -130,8 +160,16 @@ def flash_attn_func(q, k, v, causal=False, window_size=(-1, -1)):
     return y.transpose(1, 2)  # back to (B, T, H, D)
 
 
-def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=None,
-                            causal=False, window_size=(-1, -1)):
+def flash_attn_with_kvcache(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k: torch.Tensor | None = None,
+    v: torch.Tensor | None = None,
+    cache_seqlens: torch.Tensor | None = None,
+    causal: bool = False,
+    window_size: tuple[int, int] = (-1, -1),
+) -> torch.Tensor:
     """
     Flash Attention with KV cache for inference.
 
@@ -149,19 +187,31 @@ def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=N
         Output tensor of shape (B, T_new, H, D)
     """
     if USE_FA3:
-        return _fa3.flash_attn_with_kvcache(
-            q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens,
-            causal=causal, window_size=window_size
+        return cast(
+            torch.Tensor,
+            _fa3.flash_attn_with_kvcache(
+                q,
+                k_cache,
+                v_cache,
+                k=k,
+                v=v,
+                cache_seqlens=cache_seqlens,
+                causal=causal,
+                window_size=window_size,
+            ),
         )
 
     # SDPA fallback: manually manage KV cache
-    B, T_new, H, D = q.shape
+    _, T_new, _, _ = q.shape
+    assert cache_seqlens is not None, (
+        "cache_seqlens is required in the SDPA fallback path"
+    )
     pos = cache_seqlens[0].item()  # assume uniform position across batch
 
     # Insert new k, v into cache (in-place, matching FA3 behavior)
     if k is not None and v is not None:
-        k_cache[:, pos:pos+T_new, :, :] = k
-        v_cache[:, pos:pos+T_new, :, :] = v
+        k_cache[:, pos : pos + T_new, :, :] = k
+        v_cache[:, pos : pos + T_new, :, :] = v
 
     # Get full cache up to current position + new tokens
     end_pos = pos + T_new
@@ -183,6 +233,7 @@ def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=N
 # Export: flash_attn module interface (drop-in replacement for FA3)
 # =============================================================================
 from types import SimpleNamespace
+
 flash_attn = SimpleNamespace(
     flash_attn_func=flash_attn_func,
     flash_attn_with_kvcache=flash_attn_with_kvcache,
