@@ -88,15 +88,26 @@ use_lmms_eval               = False     # 本地单卡，无 Slurm
 eval_interval               = 500
 ```
 
-启动入口应为：
+启动入口（配置已落地为 JSON，见 `configs/vlm_rtx5060ti.json` / `configs/train_rtx5060ti.json`）：
 
 ```bash
 python -m src.train_vlm \
-  --lr_mp 5e-4 --lr_vision_backbone 5e-5 --lr_language_backbone 5e-5 \
-  --no_log_wandb --train_dataset_path <dataset> --compile False
+  --vlm_config configs/vlm_rtx5060ti.json \
+  --train_config configs/train_rtx5060ti.json \
+  --no_log_wandb
 ```
 
-## 6. 落地前置问题（设计阶段不修复，仅记录）
+> 注意：不要传 `--compile False` —— `argparse` 的 `type=bool` 会把字符串 `"False"`
+> 解析为 `True`；依赖 train config 的 `compile=false` 即可。
+
+**图像缩放参数（落地时新增，必填）：**
+
+- `max_img_size=256` + `resize_to_max_side_len=false`：任意图像缩放至长边 ≤256 →
+  单个 256×256 块 → 每图恰 16 个图像 token，与 `mp_image_token_length=16` 匹配。
+- 若缺省（默认 `2048/True`），`DynamicResize` 会把任意图像强制放大到长边 2048 再切块，
+  单图最多产生约 1040 个图像 token，击穿 `n_positions=2048` 的打包预算。
+
+## 6. 落地前置问题（均已在提交 3216c96 修复）
 
 1. **`VLMConfig.__post_init__` 无条件覆盖**（`src/models/config.py:242-267`）会把
    `n_embd/n_layers/n_heads/n_kv_heads/n_intermediate/n_positions/vocab_size` 覆盖回 360M 默认值。
@@ -116,3 +127,59 @@ python -m src.train_vlm \
 - 视觉更细：升级 `image_size=512` 需把 `mp_image_token_length` 改为 64，并接受约 4× 的 ViT 计算开销。
 - 更强语言：升级 `SmolLM2-360M-Instruct`（总参 460M），需配合 256 分辨率并降低 batch。
 - 显存进一步压缩：冻结视觉骨干（`lr_vision_backbone=0`）可将训练预算降至 ~5 GB。
+
+## 8. 训练与数据准备
+
+### 8.1 环境
+
+- 目标机器需能访问 HuggingFace Hub：首次运行自动下载 SmolLM2-135M-Instruct
+  权重与 tokenizer、SigLIP2 权重（`from_pretrained`）及训练数据集。
+- 依赖：`uv sync`（`torchvision` 已入依赖）。
+- 单卡直接运行（无 `RANK`/`WORLD_SIZE` 环境变量则自动跳过 DDP，`src/train_vlm.py:994`）。
+- 显存预算约 8 GB，16G 卡余量充足（可升 batch 2）。
+
+### 8.2 启动训练
+
+```bash
+python -m src.train_vlm \
+  --vlm_config configs/vlm_rtx5060ti.json \
+  --train_config configs/train_rtx5060ti.json \
+  --no_log_wandb
+```
+
+- 等效全局 batch = `batch_size(1) × gradient_accumulation_steps(16) = 16`。
+- 每 500 步自动 eval 并存档到 `checkpoints/<run_name>/step_<N>/`（safetensors）。
+- 换数据集用 `--train_dataset_path <path>`；其余超参数经 `--train_config` JSON 覆盖。
+
+### 8.3 断点续训
+
+```bash
+python -m src.train_vlm \
+  --vlm_config configs/vlm_rtx5060ti.json \
+  --train_config configs/train_rtx5060ti.json \
+  --resume_from_vlm_checkpoint True \
+  --vlm_checkpoint_path checkpoints/<run_name> \
+  --no_log_wandb
+```
+
+续训会自动置 `vlm_load_backbone_weights=False`（`src/train_vlm.py:989-992`）。
+
+### 8.4 数据格式要求
+
+训练数据为 HF `datasets` 格式，每个样本包含：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `images` | PIL / 图像列表 | 每个样本的关联图像 |
+| `texts` | `{"user": str, "assistant": str}` 列表 | 图文对话对 |
+| `relevance_ratings` 等 | 可选 int | 低于 `train_cfg` 对应 `*_min_rating=1` 的样本被过滤 |
+
+处理流程（`src/data/vqa_datasets.py`）：
+
+1. 图像经 `DynamicResize`（长边 ≤256）→ 单 256×256 块 → 16 个图像 token。
+2. 文本经 `lm_chat_template`（im_start 格式）套用为对话。
+3. `ConstantLengthDataset` 将样本打包至 `seq_length=2048`（`src/train_vlm.py:226`）。
+4. `VQACollator` 左填充至 `max_sample_length`，标签 padding 用 `-100`。
+
+默认数据集 `HuggingFaceM4/FineVision` + `sharegpt4v(coco)`（`stream_dataset=False`
+全量落盘）；数据下载可在有网环境单独完成，再通过 `--train_dataset_path` 指定本地路径。
