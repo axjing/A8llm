@@ -76,6 +76,10 @@ class GPT(nn.Module):
         self.apply(lambda m: init_weights(m, rms_norm=False))
         scale_residual_projections(self, n_layers=self.config.n_layers, suffix="c_proj.weight")
 
+    def get_device(self):
+        """Return the device the model parameters live on."""
+        return next(self.parameters()).device
+
     def get_num_params(self,non_embedding=True):
         """
         返回模型中的参数数量。

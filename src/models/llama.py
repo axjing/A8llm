@@ -77,6 +77,10 @@ class LlamaTransformer(nn.Module):
         self.apply(self._init_weights)
         
         self.cfg=cfg
+
+    def get_device(self):
+        """Return the device the model parameters live on."""
+        return next(self.parameters()).device
     
     def _init_weights(self, module):
         """Initialize model weights using the shared utility."""
@@ -311,7 +315,7 @@ class LlamaTransformer(nn.Module):
             block_prefix=f'blocks.{i}.'
             
             mapping.update({
-                f'{layer_prefix}self_attn.q_proj.weight':f'{block_prefix}self_attn.q_attn.weight',
+                f'{layer_prefix}self_attn.q_proj.weight':f'{block_prefix}attn.q_attn.weight',
                 f'{layer_prefix}self_attn.k_proj.weight':f'{block_prefix}attn.k_attn.weight',
                 f"{layer_prefix}self_attn.v_proj.weight": f"{block_prefix}attn.v_attn.weight",
                 f"{layer_prefix}self_attn.o_proj.weight": f"{block_prefix}attn.c_proj.weight",

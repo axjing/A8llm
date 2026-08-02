@@ -20,6 +20,21 @@ def get_world_size():
 def get_rank():
     return dist.get_rank() if is_ddp_initialized() else 0
 
+_CPU_GROUP = None
+
+
+def _get_cpu_group():
+    """Lazily create a host-RAM gloo group used for object gather.
+
+    Must be called collectively by all ranks (it is only invoked from the
+    collective ``distributed_gather``).
+    """
+    global _CPU_GROUP
+    if _CPU_GROUP is None:
+        _CPU_GROUP = dist.new_group(backend="gloo")
+    return _CPU_GROUP
+
+
 def distributed_gather(obj):
     """
     无需分配临时CUDA缓冲区，从所有进程编号中收集**任意**可序列化对象。返回列表格式为[编号0对象、编号1对象……]。
@@ -30,12 +45,12 @@ def distributed_gather(obj):
         return [obj]
     
     result=[None] * dist.get_world_size()
-    dist.all_gather_object(result,obj,group=PG_CPU) # CUP path
+    dist.all_gather_object(result,obj,group=_get_cpu_group()) # CPU path
     
     return result
 
 def distributed_mean_scalar(x:float|int)->float:
-    if not (dist.is_available and dist.is_initialized):
+    if not (dist.is_available() and dist.is_initialized()):
         return float(x)
     
     t=torch.tensor(x,device=torch.cuda.current_device(),dtype=torch.float32)

@@ -36,8 +36,6 @@ from src.common.logger import logger
 from datasets import load_dataset, concatenate_datasets, get_dataset_config_names, load_from_disk
 from datasets import config as datasets_config
 
-PG_CPU=None
-
 from src.data.vqa_datasets import VQADataset,VQACollator
 from src.data.data_utils import synchronized_dataloader_step
 from src.data.datasets_advanced import ConstantLengthDataset
@@ -679,7 +677,6 @@ def train(train_cfg: TrainConfig, vlm_cfg: VLMConfig):
             swanlab.finish()
 
 def main():
-    global PG_CPU
     parser = argparse.ArgumentParser()
     parser.add_argument('--lr_mp', type=float, help='Learning rate for the mapping network')
     parser.add_argument('--lr_vision_backbone', type=float, help='Learning rate for the vision backbone')
@@ -730,7 +727,6 @@ def main():
 
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         init_dist()
-        PG_CPU = dist.new_group(backend="gloo")   # host‑RAM, zero GPU allocations
 
     if is_master():
         logger.info(">>> ---------- VLM Config ---------- <<<")

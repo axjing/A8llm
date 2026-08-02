@@ -3,24 +3,25 @@ GPT模型简单测试示例
 直接运行即可验证各个功能
 """
 
+import os
+import sys
+
 import torch
 import torch.nn as nn
-import sys
-import os
 
 # 添加当前目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from src.models.gpt import (
-    Conv1D, 
-    scaled_dot_product_attention,
-    LayerNorm,
-    CausalSelfAttention,
+from src.models.config import LLMConfig
+from src.models.gpt import GPT, Block
+from src.models.layers import (
     MLP,
-    Block,
-    GPT
+    CausalSelfAttention,
+    Conv1D,
+    LayerNorm,
+    scaled_dot_product_attention,
 )
-from models.config import LLMConfig
+
 
 def test_conv1d():
     """测试Conv1D层"""
@@ -244,10 +245,10 @@ def test_gpt_from_pretrained_initialization():
             # 测试模型初始化（不实际下载权重）
             # 这里我们模拟from_pretrained的行为，但不实际调用Hugging Face
             config_args = {
-                'gpt2':         dict(n_layer=12, n_head=12, n_embd=768),
-                'gpt2-medium':  dict(n_layer=24, n_head=16, n_embd=1024),
-                'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280),
-                'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600),
+                'gpt2':         dict(n_layers=12, n_heads=12, n_embd=768),
+                'gpt2-medium':  dict(n_layers=24, n_heads=16, n_embd=1024),
+                'gpt2-large':   dict(n_layers=36, n_heads=20, n_embd=1280),
+                'gpt2-xl':      dict(n_layers=48, n_heads=25, n_embd=1600),
             }[model_type]
             
             config_args['vocab_size'] = 50257
@@ -261,8 +262,8 @@ def test_gpt_from_pretrained_initialization():
             assert model.config.vocab_size == 50257
             assert model.config.n_positions == 1024
             assert model.config.bias == True
-            assert model.config.n_layers == config_args['n_layer']
-            assert model.config.n_heads == config_args['n_head']
+            assert model.config.n_layers == config_args['n_layers']
+            assert model.config.n_heads == config_args['n_heads']
             assert model.config.n_embd == config_args['n_embd']
             
             print(f"✓ {model_type} 初始化测试通过")
@@ -282,7 +283,7 @@ def test_gpt_from_pretrained_override_args():
     override_args = {'dropout': 0.2}
     
     # 模拟配置创建
-    config_args = dict(n_layer=12, n_head=12, n_embd=768)
+    config_args = dict(n_layers=12, n_heads=12, n_embd=768)
     config_args['vocab_size'] = 50257
     config_args['n_positions'] = 1024
     config_args['bias'] = True
@@ -346,7 +347,7 @@ def test_gpt_from_pretrained_integration():
     # 测试配置参数的正确性
     model_type = 'gpt2'
     config_args = {
-        'gpt2': dict(n_layer=12, n_head=12, n_embd=768),
+        'gpt2': dict(n_layers=12, n_heads=12, n_embd=768),
     }[model_type]
     
     config_args['vocab_size'] = 50257
