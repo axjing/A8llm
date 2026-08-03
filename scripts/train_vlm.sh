@@ -13,5 +13,4 @@
 
 python -m src.train_vlm \
     --vlm_config configs/vlm_rtx5060ti.json \
-    --train_config configs/train_rtx5060ti.json \
-    --no_log_wandb
+    --train_config configs/train_rtx5060ti.json

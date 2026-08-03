@@ -94,6 +94,8 @@ def get_dataloaders(
     DataLoader[Any],
     Iterator[dict[str, Any]],
     Iterator[dict[str, Any]],
+    int,
+    int,
 ]:
     if is_master():
         logger.info(f"Getting dataloaders from {train_cfg.train_dataset_path}")
@@ -202,6 +204,14 @@ def get_dataloaders(
         val_ds = train_dataset.select(range(val_size))
         train_dataset = train_dataset.select(range(val_size, len(train_dataset)))
 
+    # Streaming datasets expose no `__len__`; keep -1 as a placeholder then.
+    if train_cfg.stream_dataset:
+        num_train_samples = -1
+        num_val_samples = -1
+    else:
+        num_train_samples = len(train_dataset)
+        num_val_samples = len(val_ds)
+
     train_dataset = VQADataset(
         train_dataset,
         tokenizer,
@@ -298,7 +308,14 @@ def get_dataloaders(
     except (StopIteration, RuntimeError, ValueError) as e:
         raise ValueError(f"Error warmup val loader: {e}")
 
-    return train_loader, val_loader, iter_train_loader, iter_val_loader
+    return (
+        train_loader,
+        val_loader,
+        iter_train_loader,
+        iter_val_loader,
+        num_train_samples,
+        num_val_samples,
+    )
 
 
 def get_learn_rate(it: int, max_lr: float, max_steps: int) -> float:
@@ -325,9 +342,14 @@ def get_learn_rate(it: int, max_lr: float, max_steps: int) -> float:
 
 def train(train_cfg: TrainConfig, vlm_cfg: VLMConfig) -> None:
 
-    train_loader, val_loader, iter_train_loader, iter_val_loader = get_dataloaders(
-        train_cfg, vlm_cfg
-    )
+    (
+        train_loader,
+        val_loader,
+        iter_train_loader,
+        iter_val_loader,
+        num_train_samples,
+        num_val_samples,
+    ) = get_dataloaders(train_cfg, vlm_cfg)
 
     if is_ddp_initialized():
         if is_master():
@@ -369,14 +391,14 @@ def train(train_cfg: TrainConfig, vlm_cfg: VLMConfig) -> None:
             f"VLM initialized with {sum(p.numel() for p in model.parameters()):,} parameters"
         )
         logger.info(
-            f"Training summary {'(global)' if is_ddp_initialized() else ''}: {-1 * get_world_size()} samples, batch size {int(train_cfg.batch_size * get_world_size() * train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_ddp_initialized() else ''}"
+            f"Training summary {'(global)' if is_ddp_initialized() else ''}: {num_train_samples} samples, batch size {int(train_cfg.batch_size * get_world_size() * train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_ddp_initialized() else ''}"
         )
         if is_ddp_initialized():
             logger.info(
                 f"Training summary per GPU: batch size {train_loader.batch_size}"
             )
         logger.info(
-            f"Validation summary{' (global)' if is_ddp_initialized() else ''}: {-1 * get_world_size()} samples, batch size {int(train_cfg.batch_size * get_world_size() * train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_ddp_initialized() else ''}"
+            f"Validation summary{' (global)' if is_ddp_initialized() else ''}: {num_val_samples} samples, batch size {int(train_cfg.batch_size * get_world_size() * train_cfg.gradient_accumulation_steps)}{', training on ' + str(get_world_size()) + ' GPUs' if is_ddp_initialized() else ''}"
         )
         if is_ddp_initialized():
             logger.info(
@@ -800,6 +822,18 @@ def train(train_cfg: TrainConfig, vlm_cfg: VLMConfig) -> None:
                     batch_loss_gathered = distributed_mean_scalar(batch_loss)
                 else:
                     batch_loss_gathered = batch_loss
+
+                # MASTER ONLY: Print loss to console
+                if is_master():
+                    grad_norm_str = (
+                        f", Grad Norm: {grad_norm:.4f}"
+                        if train_cfg.max_grad_norm is not None
+                        else ""
+                    )
+                    logger.info(
+                        f"Step: {global_step}, Loss: {batch_loss_gathered:.4f}"
+                        f"{grad_norm_str}"
+                    )
 
                 # MASTER ONLY: Log to wandb
                 if train_cfg.log_wandb and is_master():

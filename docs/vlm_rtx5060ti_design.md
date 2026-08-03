@@ -91,10 +91,7 @@ eval_interval               = 500
 启动入口（配置已落地为 JSON，见 `configs/vlm_rtx5060ti.json` / `configs/train_rtx5060ti.json`）：
 
 ```bash
-python -m src.train_vlm \
-  --vlm_config configs/vlm_rtx5060ti.json \
-  --train_config configs/train_rtx5060ti.json \
-  --no_log_wandb
+python -m src.train_vlm --vlm_config configs/vlm_rtx5060ti.json --train_config configs/train_rtx5060ti.json
 ```
 
 > 注意：不要传 `--compile False` —— `argparse` 的 `type=bool` 会把字符串 `"False"`
@@ -143,13 +140,21 @@ python -m src.train_vlm \
 ```bash
 python -m src.train_vlm \
   --vlm_config configs/vlm_rtx5060ti.json \
-  --train_config configs/train_rtx5060ti.json \
-  --no_log_wandb
+  --train_config configs/train_rtx5060ti.json
 ```
 
 - 等效全局 batch = `batch_size(1) × gradient_accumulation_steps(16) = 16`。
 - 每 500 步自动 eval 并存档到 `checkpoints/<run_name>/step_<N>/`（safetensors）。
 - 换数据集用 `--train_dataset_path <path>`；其余超参数经 `--train_config` JSON 覆盖。
+- 训练 loss 在每个优化步打印到控制台（`Step: N, Loss: ...`），并同步记录到 swanlab。
+
+### 8.2.1 swanlab 实验记录
+
+- `train_rtx5060ti.json` 中 `log_wandb=true`、`wandb_entity="anxiangjing"`（改成你的 swanlab 用户名）。
+- 首次使用需登录：`uv run swanlab login`（或设置环境变量 `SWANLAB_API_KEY`）。
+- 记录内容：`batch_loss`、`grad_norm`、`val_loss`、`epoch_loss`、吞吐与数据加载统计；
+  实验名自动生成（含模型/GPU/batch/步数等，`get_run_name`）。
+- 关闭记录：`--no_log_wandb` 或把 JSON 中 `log_wandb` 改回 `false`。
 
 ### 8.3 断点续训
 
@@ -158,8 +163,7 @@ python -m src.train_vlm \
   --vlm_config configs/vlm_rtx5060ti.json \
   --train_config configs/train_rtx5060ti.json \
   --resume_from_vlm_checkpoint True \
-  --vlm_checkpoint_path checkpoints/<run_name> \
-  --no_log_wandb
+  --vlm_checkpoint_path checkpoints/<run_name>
 ```
 
 续训会自动置 `vlm_load_backbone_weights=False`（`src/train_vlm.py:989-992`）。
