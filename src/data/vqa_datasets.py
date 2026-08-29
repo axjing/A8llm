@@ -150,22 +150,38 @@ class DatasetBase(Dataset[Any]):
             add_special_tokens=False,
             return_dict=True,
         )
-        mask = [0] * len(conv_ids["input_ids"])
+        total_tokens = len(conv_ids["input_ids"])
+        mask = [0] * total_tokens
 
-        # Locate each assistant turn and flip its mask to 1
-        cursor = 0
-        for msg in messages:
-            segment_ids = self.tokenizer.apply_chat_template(
-                [msg], tokenize=True, add_special_tokens=False
+        # Locate each assistant turn and flip its mask to 1.
+        # Use incremental prefix encoding to get accurate per-message token offsets
+        # in the full conversation. Encoding [msg] in isolation can produce a
+        # different segment length (e.g. an extra BOS token) than the same
+        # message embedded in the full chat, which caused the cursor to drift
+        # and the loss-mask to miss every assistant token (=> all labels -100 => nan loss).
+        offsets: list[int] = [0]
+        for i in range(1, len(messages) + 1):
+            partial_ids = self.tokenizer.apply_chat_template(
+                messages[:i], tokenize=True, add_special_tokens=False
             )
-            seg_len = len(segment_ids)
+            offsets.append(len(partial_ids))
+
+        # Safety: if for some reason incremental encoding doesn't match full
+        # encoding (should not happen), fall back to the full length.
+        if offsets[-1] != total_tokens:
+            offsets[-1] = total_tokens
+
+        for i, msg in enumerate(messages):
+            seg_start = offsets[i]
+            seg_end = offsets[i + 1]
 
             if msg["role"] == "assistant":
-                start = cursor + self.prefix_len
-                end = cursor + seg_len
-                mask[start:end] = [1] * (end - start)  # attend to these tokens
-
-            cursor += seg_len
+                # prefix_len skips the assistant-role template prefix so the
+                # model is only trained on the actual assistant reply text.
+                start = min(seg_start + self.prefix_len, total_tokens)
+                end = min(seg_end, total_tokens)
+                if start < end:
+                    mask[start:end] = [1] * (end - start)
 
         return (
             torch.tensor(conv_ids["input_ids"]),

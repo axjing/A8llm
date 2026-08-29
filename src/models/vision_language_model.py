@@ -101,11 +101,32 @@ class VisionLanguageModel(nn.Module):
             logits = self.decoder.head(logits)  # Apply LM head
             # Loss is calculated over all tokens, but `targets` (labels) will have -100 for non-answer tokens.
             # No need to slice logits based on image embedding size here, as the target mask handles it.
-            loss = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                targets.reshape(-1),
-                ignore_index=-100,
-            )
+            targets_flat = targets.reshape(-1)
+            valid_token_count = (targets_flat != -100).sum().item()
+            if valid_token_count == 0:
+                # Guard against empty target mask which would make cross_entropy return NaN.
+                # Fall back to zero loss with zero gradient contribution.
+                loss = logits.sum() * 0.0
+                import warnings
+                warnings.warn(
+                    f"[VLM.forward] No valid training tokens (all labels == -100)! "
+                    f"input_ids shape={tuple(input_ids.shape)}, returning zero loss. "
+                    f"This usually indicates a bug in the dataset mask / labels generation."
+                )
+            else:
+                loss = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    targets_flat,
+                    ignore_index=-100,
+                )
+                # Guard against numerical instability (e.g. inf logits)
+                if not torch.isfinite(loss):
+                    import warnings
+                    warnings.warn(
+                        f"[VLM.forward] Non-finite loss detected: {loss.item()}. "
+                        f"valid_tokens={valid_token_count}, logits range=[{logits.min().item():.2f}, {logits.max().item():.2f}]"
+                    )
+                    loss = logits.new_tensor(0.0)
 
         return logits, loss
 
