@@ -13,9 +13,9 @@ from torch import nn
 # 添加当前目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from src.models.config import LLMConfig
-from src.models.gpt import GPT, Block
-from src.models.layers import (
+from xlm.models.config import LLMConfig
+from xlm.models.gpt import GPT, Block
+from xlm.models.layers import (
     MLP,
     CausalSelfAttention,
     Conv1D,

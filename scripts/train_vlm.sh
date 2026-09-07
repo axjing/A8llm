@@ -9,8 +9,6 @@
 #       --rdzv_id=$SLURM_JOB_ID \
 #       --rdzv_backend=c10d \
 #       --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
-#       -m src.train_vlm --vlm_config configs/vlm_rtx5060ti.json
+#       -m xlm.train_vlm --vlm_config configs/vlm_rtx5060ti.json
 
-python -m src.train_vlm \
-    --vlm_config configs/vlm_rtx5060ti.json \
-    --train_config configs/train_rtx5060ti.json
+python -m xlm.train_vlm --vlm_config configs/vlm_rtx5060ti.json --train_config configs/train_rtx5060ti.json

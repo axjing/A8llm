@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from src.engine.engine_inference import Engine, KVCache
+from xlm.engine.engine_inference import Engine, KVCache
 
 
 class MockTokenizer:
@@ -107,7 +107,7 @@ def test_kvcache_prefill_and_prefill_copy_gpu() -> None:
     dtype = torch.float32
 
     # create source cache (batch=1) and fill it with known values
-    src = KVCache(
+    xlm = KVCache(
         batch_size=1,
         num_heads=2,
         seq_len=8,
@@ -116,11 +116,11 @@ def test_kvcache_prefill_and_prefill_copy_gpu() -> None:
         device=device,
         dtype=dtype,
     )
-    src._ensure_capacity(5)
-    assert src.k_cache is not None and src.v_cache is not None
-    src.k_cache.fill_(3.14)
-    src.v_cache.fill_(2.71)
-    src.cache_seqlens.fill_(5)
+    xlm._ensure_capacity(5)
+    assert xlm.k_cache is not None and xlm.v_cache is not None
+    xlm.k_cache.fill_(3.14)
+    xlm.v_cache.fill_(2.71)
+    xlm.cache_seqlens.fill_(5)
 
     # destination cache (batch >1)
     dst = KVCache(
@@ -132,7 +132,7 @@ def test_kvcache_prefill_and_prefill_copy_gpu() -> None:
         device=device,
         dtype=dtype,
     )
-    dst.prefill(src)
+    dst.prefill(xlm)
     assert dst.k_cache is not None and dst.v_cache is not None
 
     # after prefill, positions should be copied and values present

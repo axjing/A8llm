@@ -4,9 +4,9 @@
 
 - 硬件：NVIDIA GeForce RTX 5060 Ti 16G（单卡）。
 - 显存预算：模型权重 + 梯度 + 优化器状态 + 激活值，总占用需显著低于 16 GB，留出评估与 CUDA context 余量。
-- 复用本项目现有架构：`VisionLanguageModel`（`src/models/vision_language_model.py`）=
-  `ViT`（`src/models/vision_transformer.py`）+ `ModalityProjector`（`src/models/modality_projector.py`）
-  + `LlamaTransformer`（`src/models/llama.py`），不新增模块。
+- 复用本项目现有架构：`VisionLanguageModel`（`xlm/models/vision_language_model.py`）=
+  `ViT`（`xlm/models/vision_transformer.py`）+ `ModalityProjector`（`xlm/models/modality_projector.py`）
+  + `LlamaTransformer`（`xlm/models/llama.py`），不新增模块。
 - 骨干权重通过现有 `from_pretrained` 流程加载。
 
 ## 2. 方案概览（实测参数量）
@@ -69,7 +69,7 @@ vlm_load_backbone_weights = True
 | **合计** | **≈ 8 GB** |
 | 16 GB 余量 | ~8 GB（可升 batch 2 + 梯度累积 8） |
 
-训练采用 `torch.autocast(bf16)`（`src/train_vlm.py:504`），保持现有 fp32 主权重 + bf16 计算模式。
+训练采用 `torch.autocast(bf16)`（`xlm/train_vlm.py:504`），保持现有 fp32 主权重 + bf16 计算模式。
 
 ## 5. 训练配置（TrainConfig）
 
@@ -91,7 +91,7 @@ eval_interval               = 500
 启动入口（配置已落地为 JSON，见 `configs/vlm_rtx5060ti.json` / `configs/train_rtx5060ti.json`）：
 
 ```bash
-python -m src.train_vlm --vlm_config configs/vlm_rtx5060ti.json --train_config configs/train_rtx5060ti.json
+python -m xlm.train_vlm --vlm_config configs/vlm_rtx5060ti.json --train_config configs/train_rtx5060ti.json
 ```
 
 > 注意：不要传 `--compile False` —— `argparse` 的 `type=bool` 会把字符串 `"False"`
@@ -106,17 +106,17 @@ python -m src.train_vlm --vlm_config configs/vlm_rtx5060ti.json --train_config c
 
 ## 6. 落地前置问题（均已在提交 3216c96 修复）
 
-1. **`VLMConfig.__post_init__` 无条件覆盖**（`src/models/config.py:242-267`）会把
+1. **`VLMConfig.__post_init__` 无条件覆盖**（`xlm/models/config.py:242-267`）会把
    `n_embd/n_layers/n_heads/n_kv_heads/n_intermediate/n_positions/vocab_size` 覆盖回 360M 默认值。
    语言骨干尺寸最终由 `from_pretrained` 从 HF config 覆盖，因此 135M 设计可运行；但
    `image_size=256` 等字段需确保不被覆盖，落地时需给 `__post_init__` 增加"仅在未显式指定时覆盖"逻辑。
 2. **`train_vlm.py::main()` 不支持 JSON/CLI 加载配置**，仅构造 `VLMConfig()`。落地需扩展
    `--config <path>` 参数，并新增 `configs/vlm_rtx5060ti.json`。
-3. **`scripts/train_vlm.sh:8`** 引用不存在的 `../src/train.py`，应改为 `python -m src.train_vlm`。
-4. **`src/train_vlm.py:653`** `sbatch eval.slurm` 依赖 Slurm 环境，单卡本地训练应设 `use_lmms_eval=False`。
-5. **`src/models/vision_transformer.py:153-159`** `ViTBlock.forward` 残差写法错误
+3. **`scripts/train_vlm.sh:8`** 引用不存在的 `../xlm/train.py`，应改为 `python -m xlm.train_vlm`。
+4. **`xlm/train_vlm.py:653`** `sbatch eval.slurm` 依赖 Slurm 环境，单卡本地训练应设 `use_lmms_eval=False`。
+5. **`xlm/models/vision_transformer.py:153-159`** `ViTBlock.forward` 残差写法错误
    （pre-norm 应为 `x = x + attn(ln1(x))`），加载 SigLIP 权重后输出损坏，训练前需修复。
-6. **`src/models/llama.py:433`** `loaded_keys.add()` 缩进错误，仅影响多分片 checkpoint
+6. **`xlm/models/llama.py:433`** `loaded_keys.add()` 缩进错误，仅影响多分片 checkpoint
    （SmolLM2-1.7B/3B）；135M 为单文件，本设计不受影响。
 
 ## 7. 扩展方向（可选）
@@ -132,13 +132,13 @@ python -m src.train_vlm --vlm_config configs/vlm_rtx5060ti.json --train_config c
 - 目标机器需能访问 HuggingFace Hub：首次运行自动下载 SmolLM2-135M-Instruct
   权重与 tokenizer、SigLIP2 权重（`from_pretrained`）及训练数据集。
 - 依赖：`uv sync`（`torchvision` 已入依赖）。
-- 单卡直接运行（无 `RANK`/`WORLD_SIZE` 环境变量则自动跳过 DDP，`src/train_vlm.py:994`）。
+- 单卡直接运行（无 `RANK`/`WORLD_SIZE` 环境变量则自动跳过 DDP，`xlm/train_vlm.py:994`）。
 - 显存预算约 8 GB，16G 卡余量充足（可升 batch 2）。
 
 ### 8.2 启动训练
 
 ```bash
-python -m src.train_vlm \
+python -m xlm.train_vlm \
   --vlm_config configs/vlm_rtx5060ti.json \
   --train_config configs/train_rtx5060ti.json
 ```
@@ -159,14 +159,14 @@ python -m src.train_vlm \
 ### 8.3 断点续训
 
 ```bash
-python -m src.train_vlm \
+python -m xlm.train_vlm \
   --vlm_config configs/vlm_rtx5060ti.json \
   --train_config configs/train_rtx5060ti.json \
   --resume_from_vlm_checkpoint True \
   --vlm_checkpoint_path checkpoints/<run_name>
 ```
 
-续训会自动置 `vlm_load_backbone_weights=False`（`src/train_vlm.py:989-992`）。
+续训会自动置 `vlm_load_backbone_weights=False`（`xlm/train_vlm.py:989-992`）。
 
 ### 8.4 数据格式要求
 
@@ -178,11 +178,11 @@ python -m src.train_vlm \
 | `texts` | `{"user": str, "assistant": str}` 列表 | 图文对话对 |
 | `relevance_ratings` 等 | 可选 int | 低于 `train_cfg` 对应 `*_min_rating=1` 的样本被过滤 |
 
-处理流程（`src/data/vqa_datasets.py`）：
+处理流程（`xlm/data/vqa_datasets.py`）：
 
 1. 图像经 `DynamicResize`（长边 ≤256）→ 单 256×256 块 → 16 个图像 token。
 2. 文本经 `lm_chat_template`（im_start 格式）套用为对话。
-3. `ConstantLengthDataset` 将样本打包至 `seq_length=2048`（`src/train_vlm.py:226`）。
+3. `ConstantLengthDataset` 将样本打包至 `seq_length=2048`（`xlm/train_vlm.py:226`）。
 4. `VQACollator` 左填充至 `max_sample_length`，标签 padding 用 `-100`。
 
 默认数据集 `HuggingFaceM4/FineVision` + `sharegpt4v(coco)`（`stream_dataset=False`

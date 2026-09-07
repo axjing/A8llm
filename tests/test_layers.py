@@ -8,9 +8,9 @@ import torch
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.config import LLMConfig
-from src.models.layers import GroupedQueryAttention
-from src.models.position_embedding import RotaryEmbedding
+from xlm.models.config import LLMConfig
+from xlm.models.layers import GroupedQueryAttention
+from xlm.models.position_embedding import RotaryEmbedding
 
 
 def test_grouped_query_attention() -> None:

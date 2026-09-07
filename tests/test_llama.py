@@ -7,8 +7,8 @@ import torch
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.config import LLMConfig
-from src.models.llama import LlamaBlock, LlamaTransformer
+from xlm.models.config import LLMConfig
+from xlm.models.llama import LlamaBlock, LlamaTransformer
 
 
 class TestLlamaBlock(unittest.TestCase):
@@ -40,7 +40,7 @@ class TestLlamaBlock(unittest.TestCase):
         print(f"输入张量形状: {x.shape}")
 
         # 创建旋转位置编码
-        from src.models.position_embedding import RotaryEmbedding
+        from xlm.models.position_embedding import RotaryEmbedding
 
         rotary = RotaryEmbedding(self.cfg)
         position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
@@ -72,7 +72,7 @@ class TestLlamaBlock(unittest.TestCase):
 
         x = torch.randn(batch_size, seq_len, hidden_dim)
 
-        from src.models.position_embedding import RotaryEmbedding
+        from xlm.models.position_embedding import RotaryEmbedding
 
         rotary = RotaryEmbedding(self.cfg)
         position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)
@@ -95,7 +95,7 @@ class TestLlamaBlock(unittest.TestCase):
 
         x = torch.randn(batch_size, seq_len, hidden_dim)
 
-        from src.models.position_embedding import RotaryEmbedding
+        from xlm.models.position_embedding import RotaryEmbedding
 
         rotary = RotaryEmbedding(self.cfg)
         position_ids = torch.arange(seq_len).unsqueeze(0).expand(batch_size, -1)

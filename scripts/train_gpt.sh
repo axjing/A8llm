@@ -43,7 +43,7 @@ fi
 # During the course of the run, we will be writing markdown reports to the report/
 # directory in the base dir. This command clears it out and writes a header section
 # with a bunch of system info and a timestamp that marks the start of the run.
-python -m src.report reset
+python -m xlm.report reset
 
 # -----------------------------------------------------------------------------
 # Tokenizer
@@ -53,16 +53,16 @@ python -m src.report reset
 # so we download 2e9 / 250e6 = 8 data shards at this point
 # each shard is ~100MB of text (compressed), so this is about ~800MB of data on disk
 # look at dev/repackage_data_reference.py for details on how this data was prepared
-python -m src.data.get_datasets -n 8
+python -m xlm.data.get_datasets -n 8
 # Immediately also kick off downloading more shards in the background while tokenizer trains
 # Approximately 150 shards are needed for GPT-2 capability pretraining, add 20 for padding.
 # The maximum total number of shards available in the entire dataset is 6542.
-python -m src.data.get_datasets -n 170 &
+python -m xlm.data.get_datasets -n 170 &
 DATASET_DOWNLOAD_PID=$!
 # train the tokenizer with vocab size 2**15 = 32768 on ~2B characters of data
-python -m src.trainer.train_tokenizer
+python -m xlm.trainer.train_tokenizer
 # evaluate the tokenizer (report compression ratio etc.)
-python -m src.trainer.eval_tokenizer
+python -m xlm.trainer.eval_tokenizer
 
 # -----------------------------------------------------------------------------
 # Base model (pretraining)
@@ -70,9 +70,9 @@ echo "Waiting for dataset download to complete..."
 wait $DATASET_DOWNLOAD_PID
 
 # d24 model (slightly undertrained to beat GPT-2 => decrease data:params ratio from compute optimal 10.5 (default) to 8)
-torchrun --standalone --nproc_per_node=8 -m src.train -- --depth=24 --target-param-data-ratio=8 --device-batch-size=16 --fp8 --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=8 -m xlm.train -- --depth=24 --target-param-data-ratio=8 --device-batch-size=16 --fp8 --run=$WANDB_RUN
 # evaluate the model: CORE metric, BPB on train/val, and draw samples
-torchrun --standalone --nproc_per_node=8 -m src.eval -- --device-batch-size=16
+torchrun --standalone --nproc_per_node=8 -m xlm.eval -- --device-batch-size=16
 
 # -----------------------------------------------------------------------------
 # SFT (teach the model conversation special tokens, tool use, multiple choice)

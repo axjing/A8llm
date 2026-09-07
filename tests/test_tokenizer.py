@@ -12,7 +12,7 @@ from typing import cast
 # 添加当前目录到路径
 sys.path.append(os.path.dirname(__file__))
 
-from src.common.tokenizer import SPECIAL_TOKENS, SPLIT_PATTERN, HF2Tokenizer
+from xlm.common.tokenizer import SPECIAL_TOKENS, SPLIT_PATTERN, HF2Tokenizer
 
 
 def test_tokenizer_initialization() -> None:

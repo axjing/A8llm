@@ -18,7 +18,7 @@
 
 ```
 XlmPrimer/
-├── src/
+├── xlm/
 │   ├── models/                    # 模型定义
 │   │   ├── config.py              #   LLMConfig / VLMConfig (dataclass)
 │   │   ├── gpt.py                 #   GPT-2 风格解码器 (Block, GPT)
@@ -95,8 +95,8 @@ pip install ruff mypy pytest  # 可选，用于开发
 ### 创建模型
 
 ```python
-from src.models.config import LLMConfig, get_llm_config
-from src.models.gpt import GPT
+from xlm.models.config import LLMConfig, get_llm_config
+from xlm.models.gpt import GPT
 
 # 方式 1: 使用预定义配置
 config = get_llm_config("small")  # tiny / small / base / medium / large / xl
@@ -125,7 +125,7 @@ print(f"输出形状: {logits.shape}")  # [2, 32, vocab_size]
 ### 加载预训练权重
 
 ```python
-from src.models.llama import LlamaTransformer
+from xlm.models.llama import LlamaTransformer
 
 # 从 HuggingFace Hub 加载
 model = LlamaTransformer.from_pretrained("HuggingFaceTB/SmolLM2-360M-Instruct")
@@ -146,24 +146,24 @@ bash scripts/train_gpt.sh
 
 # 或手动分步执行
 # 1. 下载数据集
-python -m src.data.get_datasets -n 170
+python -m xlm.data.get_datasets -n 170
 
 # 2. 训练 Tokenizer
-python -m src.trainer.train_tokenizer
+python -m xlm.trainer.train_tokenizer
 
 # 3. 预训练 (8 GPU)
-torchrun --standalone --nproc_per_node=8 -m src.train -- --depth=24 --device-batch-size=16 --fp8
+torchrun --standalone --nproc_per_node=8 -m xlm.train -- --depth=24 --device-batch-size=16 --fp8
 
 # 4. 评估
-torchrun --standalone --nproc_per_node=8 -m src.eval -- --device-batch-size=16
+torchrun --standalone --nproc_per_node=8 -m xlm.eval -- --device-batch-size=16
 ```
 
 ### 推理 (KV Cache)
 
 ```python
-from src.engine.engine_inference import Engine
-from src.models.gpt import GPT
-from src.models.config import LLMConfig
+from xlm.engine.engine_inference import Engine
+from xlm.models.gpt import GPT
+from xlm.models.config import LLMConfig
 
 # 加载模型
 config = LLMConfig()
@@ -179,8 +179,8 @@ tokens = engine.generate(input_ids, max_new_tokens=50, temperature=0.8)
 ### 视觉语言模型 (VLM)
 
 ```python
-from src.models.config import VLMConfig
-from src.models.vision_language_model import VisionLanguageModel
+from xlm.models.config import VLMConfig
+from xlm.models.vision_language_model import VisionLanguageModel
 
 # VLM: SigLIP ViT + SmolLM2 + ModalityProjector
 model = VisionLanguageModel.from_pretrained()
@@ -210,13 +210,13 @@ GPT-2 风格因果语言模型，架构：`Embedding → Block×N → LayerNorm 
 
 ### 训练
 
-`src/train_llm.py` 支持：DDP 分布式、cosine LR 调度、warmup/warmdown、
+`xlm/train_llm.py` 支持：DDP 分布式、cosine LR 调度、warmup/warmdown、
 Chinchilla Scaling Law 自动计算最优参数、FP8 训练、检查点保存/恢复、
 训练过程评估和采样。
 
 ### VLM 训练
 
-`src/train_vlm.py` 支持：图文联合训练、梯度累积、DDP、lmms-eval 集成评估。
+`xlm/train_vlm.py` 支持：图文联合训练、梯度累积、DDP、lmms-eval 集成评估。
 
 ## 测试
 
@@ -233,11 +233,11 @@ python -m pytest tests/test_engine_kvcache.py -v
 
 ```bash
 # 代码检查
-uv run ruff check src/ tests/
-uv run ruff format src/ tests/
+uv run ruff check xlm/ tests/
+uv run ruff format xlm/ tests/
 
 # 类型检查
-uv run mypy src/ tests/ --strict
+uv run mypy xlm/ tests/ --strict
 
 # 遵循 PEP 8 编码规范、Google-style 文档字符串、完整类型注解
 ```

@@ -199,14 +199,14 @@ Not yet in use. When added, depend on `package.json` + `package-lock.json` consi
 ### 4.1 Lint
 
 ```bash
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
+uv run ruff check xlm/ tests/
+uv run ruff format --check xlm/ tests/
 ```
 
 ### 4.2 Type Check
 
 ```bash
-uv run mypy src/ tests/ --strict
+uv run mypy xlm/ tests/ --strict
 ```
 
 ### 4.3 Test
@@ -285,19 +285,19 @@ Tests and features must support Linux, macOS and Windows unless feature is expli
 
 ### 5.10 Project-Specific Conventions
 
-- **Model config**: `LLMConfig` and `VLMConfig` (dataclasses in `src/models/config.py`) hold all hyperparameters with HF-compatible serialization (`from_pretrained`, `save`, `update_from_hf_config`).
-- **GPT model**: `src/models/gpt.py` — GPT-2 style decoder with `Block` composition (`LayerNorm` → `CausalSelfAttention` → `LayerNorm` → `MLP`). `src/models/layers.py` holds reusable primitives (`Linear`, `Conv1D`, `LayerNorm`, `RMSNorm`, `CausalSelfAttention`, `GroupedQueryAttention`, `LlamaMLP`, `MLP`).
-- **Language model**: `src/models/language_model.py` — `LlamaTransformer` with RoPE, RMSNorm, GQA, KV caching, `from_pretrained()` for SmolLM2 weights.
-- **Flash Attention**: `src/models/flash_attention.py` — FA3 integration for Hopper GPUs with SDPA fallback.
-- **Position embeddings**: `src/models/position_embedding.py` — RoPE and learned positional embeddings.
-- **Vision-language**: `src/models/vision_language_model.py` — `VisionLanguageModel` (ViT + LlamaTransformer + ModalityProjector) with `generate()`, `from_pretrained()`, `save_pretrained()`, `push_to_hub()`. `src/models/vision_transformer.py` — SigLIP-based ViT. `src/models/modality_projector.py` — cross-modal projection.
-- **Tokenizer**: `src/common/tokenizer.py` — factory pattern (tiktoken, HuggingFace). `src/trainer/train_tokenizer.py` — custom tokenizer training.
-- **Training**: `src/train_llm.py` — LLM pretraining (DDP, Muon optimizer, cosine LR, scaling laws, FP8 optional, checkpointing, eval, sampling). `src/train_vlm.py` — VLM training (image+text, gradient accumulation, DDP, lmms-eval).
-- **Trainer utilities**: `src/trainer/optim.py`, `src/trainer/distributed.py` (DDP), `src/trainer/train_fp8.py` (FP8 conversion).
-- **Data**: `src/data/` — `get_datasets.py`, `text_pretrain_loader.py`, `vqa_datasets.py`, `processors.py`.
-- **Inference**: `src/engine/engine_inference.py` — `Engine` class with KV cache (FA3-optimized), tool-use state machine (calculator). `src/engine/utils_checkpoints.py` — checkpoint utilities.
-- **Evaluation**: `src/eval.py`, `src/evaluator/` — eval core, loss-based evaluation.
-- **Common**: `src/common/` — `execution.py`, `file_os.py`, `logger.py`, `tokenizer.py`.
+- **Model config**: `LLMConfig` and `VLMConfig` (dataclasses in `xlm/models/config.py`) hold all hyperparameters with HF-compatible serialization (`from_pretrained`, `save`, `update_from_hf_config`).
+- **GPT model**: `xlm/models/gpt.py` — GPT-2 style decoder with `Block` composition (`LayerNorm` → `CausalSelfAttention` → `LayerNorm` → `MLP`). `xlm/models/layers.py` holds reusable primitives (`Linear`, `Conv1D`, `LayerNorm`, `RMSNorm`, `CausalSelfAttention`, `GroupedQueryAttention`, `LlamaMLP`, `MLP`).
+- **Language model**: `xlm/models/language_model.py` — `LlamaTransformer` with RoPE, RMSNorm, GQA, KV caching, `from_pretrained()` for SmolLM2 weights.
+- **Flash Attention**: `xlm/models/flash_attention.py` — FA3 integration for Hopper GPUs with SDPA fallback.
+- **Position embeddings**: `xlm/models/position_embedding.py` — RoPE and learned positional embeddings.
+- **Vision-language**: `xlm/models/vision_language_model.py` — `VisionLanguageModel` (ViT + LlamaTransformer + ModalityProjector) with `generate()`, `from_pretrained()`, `save_pretrained()`, `push_to_hub()`. `xlm/models/vision_transformer.py` — SigLIP-based ViT. `xlm/models/modality_projector.py` — cross-modal projection.
+- **Tokenizer**: `xlm/common/tokenizer.py` — factory pattern (tiktoken, HuggingFace). `xlm/trainer/train_tokenizer.py` — custom tokenizer training.
+- **Training**: `xlm/train_llm.py` — LLM pretraining (DDP, Muon optimizer, cosine LR, scaling laws, FP8 optional, checkpointing, eval, sampling). `xlm/train_vlm.py` — VLM training (image+text, gradient accumulation, DDP, lmms-eval).
+- **Trainer utilities**: `xlm/trainer/optim.py`, `xlm/trainer/distributed.py` (DDP), `xlm/trainer/train_fp8.py` (FP8 conversion).
+- **Data**: `xlm/data/` — `get_datasets.py`, `text_pretrain_loader.py`, `vqa_datasets.py`, `processors.py`.
+- **Inference**: `xlm/engine/engine_inference.py` — `Engine` class with KV cache (FA3-optimized), tool-use state machine (calculator). `xlm/engine/utils_checkpoints.py` — checkpoint utilities.
+- **Evaluation**: `xlm/eval.py`, `xlm/evaluator/` — eval core, loss-based evaluation.
+- **Common**: `xlm/common/` — `execution.py`, `file_os.py`, `logger.py`, `tokenizer.py`.
 - **Config files**: JSON (e.g., `configs/gpt2.json`) and CLI arguments. No Pydantic.
 - **Checkpoint format**: safetensors.
 - **Distributed**: `torchrun` / DDP multi-GPU training. Scripts designed for Slurm (`srun`) and multi-node clusters.
@@ -405,15 +405,15 @@ uv sync                               # install all deps
 uv pip install torch torchvision       # or add specific packages
 
 # Lint & Type Check
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
-uv run mypy src/ tests/ --strict
+uv run ruff check xlm/ tests/
+uv run ruff format --check xlm/ tests/
+uv run mypy xlm/ tests/ --strict
 
 # Test
 uv run python -m pytest tests/ -v
 
 # Training
-python -m src.train_llm
+python -m xlm.train_llm
 bash scripts/train_vlm.sh
 
 # Git

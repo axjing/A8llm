@@ -7,9 +7,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from models.config import LLMConfig
-from src.model import GPT
-from src.trainer import Trainer
-from src.inference import TextGenerator, ChatBot
+from xlm.model import GPT
+from xlm.trainer import Trainer
+from xlm.inference import TextGenerator, ChatBot
 from common.tokenizer import get_tokenizer
 
 

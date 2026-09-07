@@ -2,9 +2,9 @@
 
 import torch
 
-from src.engine.engine_inference import Engine, KVCache
-from src.models.config import LLMConfig
-from src.models.gpt import GPT
+from xlm.engine.engine_inference import Engine, KVCache
+from xlm.models.config import LLMConfig
+from xlm.models.gpt import GPT
 
 
 class MockTokenizer:
